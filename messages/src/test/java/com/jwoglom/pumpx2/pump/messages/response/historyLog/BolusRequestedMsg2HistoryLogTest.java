@@ -1,0 +1,62 @@
+package com.jwoglom.pumpx2.pump.messages.response.historyLog;
+
+import static com.jwoglom.pumpx2.pump.messages.MessageTester.assertHexEquals;
+
+import com.jwoglom.pumpx2.pump.messages.MessageTester;
+import com.jwoglom.pumpx2.pump.messages.bluetooth.CharacteristicUUID;
+
+import org.apache.commons.codec.DecoderException;
+import org.junit.Test;
+
+public class BolusRequestedMsg2HistoryLogTest {
+    @Test
+    public void testBolusRequestedMsg2HistoryLog1() throws DecoderException {
+        BolusRequestedMsg2HistoryLog expected = new BolusRequestedMsg2HistoryLog(
+            // long pumpTimeSec, long sequenceNum, int bolusId, int options, int standardPercent, int duration, int spare1, int isf, int targetBG, boolean userOverride, boolean declinedCorrection, int selectedIOB, int spare2
+                445961478L, 180876L, 1028, 0,100, 0, 0, 30, 110, true, false, 1, 0
+
+        );
+
+        BolusRequestedMsg2HistoryLog parsedRes = (BolusRequestedMsg2HistoryLog) HistoryLogMessageTester.testSingle(
+                "410006d5941a8cc2020004040064000000001e006e0001000100",
+                expected
+        );
+
+        assertHexEquals(expected.getCargo(), parsedRes.getCargo());
+    }
+
+    @Test
+    public void testBolusRequestedMsg2HistoryLog2() throws DecoderException {
+        BolusRequestedMsg2HistoryLog expected = new BolusRequestedMsg2HistoryLog(
+                // long pumpTimeSec, long sequenceNum, int bolusId, int options, int standardPercent, int duration, int spare1, int isf, int targetBG, boolean userOverride, boolean declinedCorrection, int selectedIOB, int spare2
+                445948266L, 180529L, 1026, 0,100, 0, 0, 30, 110, false, false, 1, 0
+
+        );
+
+        BolusRequestedMsg2HistoryLog parsedRes = (BolusRequestedMsg2HistoryLog) HistoryLogMessageTester.testSingle(
+                "41006aa1941a31c1020002040064000000001e006e0000000100",
+                expected
+        );
+
+        assertHexEquals(expected.getCargo(), parsedRes.getCargo());
+    }
+
+
+
+    @Test
+    public void testBolusRequestedMsg2HistoryLog_declinedCorrection() throws DecoderException {
+        // 4100c9f4981a71e002002e040064000000001e006e0000010100	BolusRequestedMsg2HistoryLog[bolusId=1070,declinedCorrection=true,duration=0,isf=30,options=0,selectedIOB=1,spare1=0,spare2=0,standardPercent=100,targetBG=110,userOverride=false,cargo={65,0,-55,-12,-104,26,113,-32,2,0,46,4,0,100,0,0,0,0,30,0,110,0,0,1,1,0},pumpTimeSec=446231753,sequenceNum=188529]
+        BolusRequestedMsg2HistoryLog expected = new BolusRequestedMsg2HistoryLog(
+                // long pumpTimeSec, long sequenceNum, int bolusId, int options, int standardPercent, int duration, int spare1, int isf, int targetBG, boolean userOverride, boolean declinedCorrection, int selectedIOB, int spare2
+                1070, 0,100, 0, 0, 30, 110, false, true, 1, 0
+
+        );
+
+        BolusRequestedMsg2HistoryLog parsedRes = (BolusRequestedMsg2HistoryLog) HistoryLogMessageTester.testSingleIgnoringBaseFields(
+                "4100c9f4981a71e002002e040064000000001e006e0000010100",
+                expected
+        );
+
+        assertHexEquals(expected.getCargo(), parsedRes.getCargo());
+    }
+}

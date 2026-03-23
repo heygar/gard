@@ -1,0 +1,200 @@
+package com.jwoglom.pumpx2.pump.messages.response.currentStatus;
+
+import androidx.annotation.Nullable;
+
+import org.apache.commons.lang3.Validate;
+import com.jwoglom.pumpx2.pump.messages.Message;
+import com.jwoglom.pumpx2.pump.messages.MessageType;
+import com.jwoglom.pumpx2.pump.messages.annotations.MessageProps;
+import com.jwoglom.pumpx2.pump.messages.helpers.Bytes;
+import com.jwoglom.pumpx2.pump.messages.models.NotificationEnum;
+import com.jwoglom.pumpx2.pump.messages.models.NotificationMessage;
+import com.jwoglom.pumpx2.pump.messages.request.currentStatus.CGMAlertStatusRequest;
+
+import java.math.BigInteger;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
+
+@MessageProps(
+    opCode=75,
+    size=8,
+    type=MessageType.RESPONSE,
+    request=CGMAlertStatusRequest.class
+)
+public class CGMAlertStatusResponse extends NotificationMessage {
+    
+    private BigInteger intMap;
+    
+    public CGMAlertStatusResponse() {}
+    
+    public CGMAlertStatusResponse(long cgmAlertBitmask) {
+        this.cargo = buildCargo(cgmAlertBitmask);
+        this.intMap = BigInteger.valueOf(cgmAlertBitmask);
+        
+    }
+
+    public void parse(byte[] raw) {
+        Validate.isTrue(raw.length == props().size());
+        this.cargo = raw;
+        this.intMap = Bytes.readUint64(raw, 0);
+        
+    }
+
+    
+    public static byte[] buildCargo(long cgmAlertBitmask) {
+        return Bytes.combine(
+            Bytes.toUint64(cgmAlertBitmask));
+    }
+    
+    public BigInteger getIntMap() {
+        return intMap;
+    }
+    public long getBitMap() {
+        return intMap.longValue();
+    }
+
+    public Set<CGMAlert> getCgmAlerts() {
+        return CGMAlert.fromBitmask(intMap);
+    }
+
+    @Override
+    public Set<Integer> notificationIds() {
+        return getCgmAlerts()
+            .stream()
+            .filter(CGMAlert::isKnown)
+            .map(CGMAlert::getId)
+            .collect(Collectors.toSet());
+    }
+
+    @Override
+    public int size() {
+        return getCgmAlerts().size();
+    }
+
+    public enum CGMAlert implements NotificationEnum {
+        DEFAULT_CGM_ALERT_0(0),
+        FIXED_LOW_CGM_ALERT(1),
+        HIGH_CGM_ALERT(2),
+        LOW_CGM_ALERT(3),
+        CALIBRATION_REQUEST_CGM_ALERT(4),
+        RISE_CGM_ALERT(5),
+        RAPID_RISE_CGM_ALERT(6),
+        FALL_CGM_ALERT(7),
+        RAPID_FALL_CGM_ALERT(8),
+        LOW_CALIBRATION_ERROR_CGM_ALERT(9),
+        HIGH_CALIBRATION_ERROR_CGM_ALERT(10),
+        SENSOR_FAILED_CGM_ALERT(11),
+        SENSOR_EXPIRING_CGM_ALERT(12),
+        SENSOR_EXPIRED_CGM_ALERT(13),
+        OUT_OF_RANGE_CGM_ALERT(14),
+        DEFAULT_CGM_ALERT_15(15),
+        FIRST_START_CALIBRATION_CGM_ALERT(16),
+        SECOND_START_CALIBRATION_CGM_ALERT(17),
+        CALIBRATION_REQUIRED_CGM_ALERT(18),
+        LOW_TRANSMITTER_CGM_ALERT(19),
+        TRANSMITTER_CGM_ALERT(20),
+        DEFAULT_CGM_ALERT_21(21),
+        SENSOR_EXPIRING_CGM_ALERT2(22),
+        DEFAULT_CGM_ALERT_23(23),
+        DEFAULT_CGM_ALERT_24(24),
+        SENSOR_REUSE(25),
+        TEMPERATURE_CGM_ALERT(26),
+        FAILED_CONNECTION_CGM_ALERT(27),
+        DEFAULT_CGM_ALERT_28(28),
+        DEFAULT_CGM_ALERT_29(29),
+        DEFAULT_CGM_ALERT_30(30),
+        DEFAULT_CGM_ALERT_31(31),
+        DEFAULT_CGM_ALERT_32(32),
+        DEFAULT_CGM_ALERT_33(33),
+        DEFAULT_CGM_ALERT_34(34),
+        DEFAULT_CGM_ALERT_35(35),
+        DEFAULT_CGM_ALERT_36(36),
+        DEFAULT_CGM_ALERT_37(37),
+        DEFAULT_CGM_ALERT_38(38),
+        TRANSMITTER_EXPIRED_CGM_ALERT(39),
+        PUMP_BLUETOOTH_ERROR_CGM_ALERT(40),
+        DEFAULT_CGM_ALERT_41(41),
+        DEFAULT_CGM_ALERT_42(42),
+        DEFAULT_CGM_ALERT_43(43),
+        DEFAULT_CGM_ALERT_44(44),
+        DEFAULT_CGM_ALERT_45(45),
+        DEFAULT_CGM_ALERT_46(46),
+        DEFAULT_CGM_ALERT_47(47),
+        DEFAULT_CGM_ALERT_48(48),
+        DEFAULT_CGM_ALERT_49(49),
+        DEFAULT_CGM_ALERT_50(50),
+        DEFAULT_CGM_ALERT_51(51),
+        DEFAULT_CGM_ALERT_52(52),
+        DEFAULT_CGM_ALERT_53(53),
+        DEFAULT_CGM_ALERT_55(55),
+        DEFAULT_CGM_ALERT_56(56),
+        DEFAULT_CGM_ALERT_57(57),
+        DEFAULT_CGM_ALERT_58(58),
+        DEFAULT_CGM_ALERT_59(59),
+        DEFAULT_CGM_ALERT_60(60),
+        DEFAULT_CGM_ALERT_61(61),
+        DEFAULT_CGM_ALERT_62(62),
+        DEFAULT_CGM_ALERT_63(63),
+
+        ;
+
+        private final int id;
+        CGMAlert(int id) {
+            this.id = id;
+        }
+
+        public int id() {
+            return id;
+        }
+
+        @Override
+        public int getId() {
+            return id;
+        }
+
+        public String toString() {
+            return name();
+        }
+
+        public boolean isKnown() {
+            return !name().startsWith("DEFAULT_CGM_ALERT");
+        }
+
+        @Nullable
+        @Override
+        public String getDescription() {
+            if (!isKnown()) return null;
+            return name();
+        }
+
+        public static CGMAlert fromId(int id) {
+            for (CGMAlert alert : values()) {
+                if (alert.id() == id) {
+                    return alert;
+                }
+            }
+            return null;
+        }
+
+        public static Set<CGMAlert> fromBitmask(BigInteger bitmask) {
+            Set<CGMAlert> set = new TreeSet<>();
+            for (CGMAlert a : values()) {
+                if (bitmask.testBit(a.id())) {
+                    set.add(a);
+                }
+            }
+            return set;
+        }
+
+        public static BigInteger toBitmask(CGMAlert ...alerts) {
+            BigInteger i = BigInteger.ZERO;
+            for (CGMAlert a : alerts) {
+                i.setBit(a.id());
+            }
+            return i;
+        }
+    }
+    
+}

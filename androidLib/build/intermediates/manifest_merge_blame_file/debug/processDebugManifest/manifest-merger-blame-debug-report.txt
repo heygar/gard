@@ -1,0 +1,26 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.jwoglom.pumpx2" >
+4
+5    <uses-sdk android:minSdkVersion="26" />
+6
+7    <uses-permission android:name="android.permission.BLUETOOTH" />
+7-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:4:5-68
+7-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:4:22-65
+8    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+8-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:5:5-74
+8-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:5:22-71
+9    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+9-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:6:5-76
+9-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:6:22-73
+10    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+10-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:7:5-73
+10-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:7:22-70
+11    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+11-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:8:5-81
+11-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:8:22-78
+12    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+12-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:9:5-76
+12-->/home/gar/coding/MyX2/GarD/androidLib/src/main/AndroidManifest.xml:9:22-74
+13
+14</manifest>
