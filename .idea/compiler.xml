@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <bytecodeTargetLevel target="11" />
+  </component>
+  <component name="JavacSettings">
+    <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="GarD.messages" options="-parameters --add-opens java.base/java.lang=ALL-UNNAMED" />
+      <module name="GarD.messages.main" options="-parameters --add-opens java.base/java.lang=ALL-UNNAMED" />
+      <module name="GarD.messages.test" options="-parameters --add-opens java.base/java.lang=ALL-UNNAMED" />
+    </option>
+  </component>
+</project>

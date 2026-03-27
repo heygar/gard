@@ -24,9 +24,37 @@ import android.app.AlertDialog
 import android.graphics.Color
 import android.view.Gravity
 import android.widget.LinearLayout
+import android.text.Editable
+import android.text.TextWatcher
 import androidx.biometric.BiometricPrompt
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.app.NotificationCompat
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        const val NOTIFICATION_ID = 1001
+        const val CHANNEL_ID = "gard_extended_bolus"
+        const val ACTION_CANCEL_EXTENDED = "com.gard.app.CANCEL_EXTENDED"
+    }
+
+    private val cancelReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_CANCEL_EXTENDED) {
+                myPump.cancelExtendedBolus()
+            }
+        }
+    }
+
+    private val cgmReceiver = CgmBroadcastReceiver { glucose, timestamp ->
+        updateCGM(glucose)
+        appendLog("CGM Update via Broadcast: $glucose at $timestamp")
+    }
 
     private lateinit var layoutConnect: View
     private lateinit var layoutMain: View
@@ -43,6 +71,15 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        createNotificationChannel()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(cancelReceiver, IntentFilter(ACTION_CANCEL_EXTENDED), RECEIVER_NOT_EXPORTED)
+            registerReceiver(cgmReceiver, IntentFilter(CgmBroadcastReceiver.ACTION_BG_ESTIMATE), RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(cancelReceiver, IntentFilter(ACTION_CANCEL_EXTENDED))
+            registerReceiver(cgmReceiver, IntentFilter(CgmBroadcastReceiver.ACTION_BG_ESTIMATE))
+        }
+
         layoutConnect = findViewById(R.id.layoutConnect)
         layoutMain = findViewById(R.id.layoutMain)
         
@@ -55,6 +92,12 @@ class MainActivity : AppCompatActivity() {
         val btnCopyLogs: Button = findViewById(R.id.btnCopyLogs)
         val btnBolus: Button = findViewById(R.id.btnBolus)
         val etBolusUnits: EditText = findViewById(R.id.etBolusUnits)
+        val etExtendedMinutes: EditText = findViewById(R.id.etExtendedMinutes)
+        val etUnitsNow: EditText = findViewById(R.id.etUnitsNow)
+        val layoutUnitsNow: View = findViewById(R.id.layoutUnitsNow)
+        val tvUnitsNowLabel: TextView = findViewById(R.id.tvUnitsNowLabel)
+        
+        tvUnitsNowLabel.text = "Units Now"
 
         myPump = GarDPump(this, this)
         
@@ -63,10 +106,29 @@ class MainActivity : AppCompatActivity() {
                 appendLog(message)
             }
         })
+        
+        etExtendedMinutes.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val mins = s.toString().toIntOrNull() ?: 0
+                if (mins > 0) {
+                    layoutUnitsNow.visibility = View.VISIBLE
+                } else {
+                    layoutUnitsNow.visibility = View.GONE
+                    etUnitsNow.setText("0")
+                }
+            }
+        })
 
         btnConnect.setOnClickListener {
             myPump.pairingCode = etPairingCode.text.toString().trim()
             checkPermissionsAndStart()
+        }
+
+        tvStatus.setOnLongClickListener {
+            myPump.startSimulator()
+            true
         }
 
         btnCopyLogs.setOnClickListener {
@@ -77,49 +139,52 @@ class MainActivity : AppCompatActivity() {
         }
         
         btnBolus.setOnClickListener {
-            val unitsStr = etBolusUnits.text.toString()
-            val units = unitsStr.toDoubleOrNull() ?: 0.0
+            val totalUnitsStr = etBolusUnits.text.toString()
+            val totalUnits = totalUnitsStr.toDoubleOrNull() ?: 0.0
             
-            if (units <= 0.0 || units > 5.0) {
-                Toast.makeText(this, "Invalid units! Must be between 0.1 and 5.0", Toast.LENGTH_SHORT).show()
+            val extMinStr = etExtendedMinutes.text.toString()
+            val extMin = extMinStr.toIntOrNull() ?: 0
+            
+            val unitsNowStr = etUnitsNow.text.toString()
+            val unitsNow = unitsNowStr.toDoubleOrNull() ?: 0.0
+            
+            if (totalUnits <= 0.0 || totalUnits > 10.0) {
+                Toast.makeText(this, "Invalid total units!", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (unitsNow > totalUnits) {
+                Toast.makeText(this, "Units Now cannot exceed Total Units!", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (extMin < 0 || extMin > 60) {
+                Toast.makeText(this, "Extended minutes must be 0-60", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             
-            showBiometricPrompt(units)
+            showBiometricPrompt(totalUnits, extMin, unitsNow)
         }
 
         if (hasPermissions()) {
-            appendLog("Auto-starting Bluetooth since permissions are granted...")
             startBluetooth()
         }
     }
 
     private fun hasPermissions(): Boolean {
-        val permissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
-        return permissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
+        return permissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
     }
 
     private fun checkPermissionsAndStart() {
-        val permissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
-
-        val missing = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
+        val missing = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
         } else {
@@ -127,27 +192,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 1 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            startBluetooth()
-        } else {
-            tvStatus.text = "Status: Permissions Denied"
-        }
-    }
-
     private fun startBluetooth() {
         tvStatus.text = "Status: Scanning..."
-        appendLog("Starting BT Scanner with pairing code: ${myPump.pairingCode}")
         try {
             bluetoothHandler = TandemBluetoothHandler.getInstance(applicationContext, myPump)
             bluetoothHandler?.startScan()
         } catch (e: Exception) {
-            appendLog("Error starting scan: ${e.message}")
             tvStatus.text = "Status: Scan Error"
         }
     }
@@ -169,12 +219,9 @@ class MainActivity : AppCompatActivity() {
         pollingRunnable = object : Runnable {
             override fun run() {
                 myPump.requestRealtimeStatus()
-                // Schedule the next poll in 2 minutes
                 pollingHandler.postDelayed(this, 2 * 60 * 1000)
             }
         }
-        // It's already requested right after connect in GarDPump, 
-        // so we just queue it for 2 minutes from now
         pollingHandler.postDelayed(pollingRunnable!!, 2 * 60 * 1000)
     }
 
@@ -209,39 +256,95 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun updateCGM(cgm: Int) {
-        val text = if (cgm > 0) "CGM: $cgm mg/dL" else "CGM: NA"
-        findViewById<TextView>(R.id.tvCGM).text = text
+        findViewById<TextView>(R.id.tvCGM).text = if (cgm > 0) "CGM: $cgm mg/dL" else "CGM: NA"
     }
 
-    private fun showBiometricPrompt(units: Double) {
+    fun updateSessionSummary(delivered: Double, total: Double, elapsedMin: Int, totalMin: Int) {
+        val tv = findViewById<TextView>(R.id.tvBolusProgress)
+        val container = findViewById<View>(R.id.layoutBolusProgress)
+        if (total <= 0.0 && totalMin <= 0) {
+            container.visibility = View.GONE
+            return
+        }
+        val dFmt = String.format("%.1f", delivered)
+        val tFmt = String.format("%.1f", total)
+        tv.text = if (totalMin > 0) "$dFmt / $tFmt U   in   $elapsedMin / $totalMin min" else "Delivered: $dFmt / $tFmt U"
+        container.visibility = View.VISIBLE
+    }
+
+    private fun showBiometricPrompt(totalUnits: Double, extMin: Int, unitsNow: Double) {
         val executor = ContextCompat.getMainExecutor(this)
         val biometricPrompt = BiometricPrompt(this, executor,
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     super.onAuthenticationError(errorCode, errString)
-                    appendLog("Biometric error: $errString")
                 }
 
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     super.onAuthenticationSucceeded(result)
-                    appendLog("Biometric Success! Transmitting $units units.")
-                    showDeliveryDialog(units)
-                    myPump.sendBolus(units)
+                    showDeliveryDialog(totalUnits, extMin, unitsNow)
+                    myPump.sendBolus(totalUnits, extMin, unitsNow)
                 }
 
                 override fun onAuthenticationFailed() {
                     super.onAuthenticationFailed()
-                    appendLog("Biometric failed!")
                 }
             })
 
+        val subtitle = buildString {
+            if (extMin > 0) {
+                if (unitsNow > 0) append("NOW: ${String.format("%.2f", unitsNow)} U immediately\n")
+                val volumeExt = totalUnits - unitsNow
+                append("EXTENDED: ${String.format("%.2f", volumeExt)} U over $extMin min")
+            } else {
+                append("${String.format("%.2f", totalUnits)} U immediate bolus")
+            }
+        }
+
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Confirm Bolus")
-            .setSubtitle("Authenticate to deliver $units U")
+            .setTitle("Confirm Bolus — $totalUnits U total")
+            .setSubtitle(subtitle)
             .setNegativeButtonText("Cancel")
             .build()
 
         biometricPrompt.authenticate(promptInfo)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        unregisterReceiver(cancelReceiver)
+        unregisterReceiver(cgmReceiver)
+    }
+
+    private fun createNotificationChannel() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val name = "Extended Bolus"
+            val importance = NotificationManager.IMPORTANCE_HIGH
+            val channel = NotificationChannel(CHANNEL_ID, name, importance)
+            val notificationManager: NotificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    fun updateExtendedNotification(total: Double, delivered: Double, remainingMins: Int) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val cancelIntent = Intent(ACTION_CANCEL_EXTENDED)
+        val cancelPendingIntent = PendingIntent.getBroadcast(this, 0, cancelIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_preferences)
+            .setContentTitle("Extended Bolus Active")
+            .setContentText("Delivered ${String.format("%.2f", delivered)} / ${String.format("%.2f", total)} U ($remainingMins min left)")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "CANCEL EXTENDED", cancelPendingIntent)
+            
+        notificationManager.notify(NOTIFICATION_ID, builder.build())
+    }
+
+    fun cancelExtendedNotification() {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(NOTIFICATION_ID)
     }
 
     private var deliveryDialog: AlertDialog? = null
@@ -249,26 +352,26 @@ class MainActivity : AppCompatActivity() {
     private val deliveryTimeoutRunnable = Runnable { dismissDeliveryDialog(true) }
     private var deliveryStartTime = 0L
 
-    fun showDeliveryDialog(units: Double) {
+    fun showDeliveryDialog(totalUnits: Double, extMin: Int, unitsNow: Double) {
         if (deliveryDialog != null && deliveryDialog!!.isShowing) return
-        
         deliveryStartTime = System.currentTimeMillis()
         onBolusDeliveryStarted()
 
         val builder = AlertDialog.Builder(this)
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(80, 80, 80, 80)
+            setBackgroundColor(Color.parseColor("#4CAF50"))
+            gravity = Gravity.CENTER
+        }
         
-        val layout = LinearLayout(this)
-        layout.orientation = LinearLayout.VERTICAL
-        layout.setPadding(80, 80, 80, 80)
-        layout.setBackgroundColor(Color.parseColor("#4CAF50")) // Green background
-        layout.gravity = Gravity.CENTER
-        
-        val tv = TextView(this)
-        tv.text = "Delivering $units units...\n\nPlease Wait."
-        tv.setTextColor(Color.WHITE)
-        tv.textSize = 24f
-        tv.gravity = Gravity.CENTER
-        tv.setTypeface(null, android.graphics.Typeface.BOLD)
+        val tv = TextView(this).apply {
+            text = "Delivering ${String.format("%.2f", totalUnits)} U total...\nPlease Wait."
+            setTextColor(Color.WHITE)
+            textSize = 24f
+            gravity = Gravity.CENTER
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }
         
         layout.addView(tv)
         builder.setView(layout)
@@ -277,40 +380,23 @@ class MainActivity : AppCompatActivity() {
         deliveryDialog = builder.create()
         deliveryDialog?.show()
         
-        // Timeout 60 seconds maximum
         deliveryTimeoutHandler.removeCallbacks(deliveryTimeoutRunnable)
         deliveryTimeoutHandler.postDelayed(deliveryTimeoutRunnable, 60000)
     }
 
     fun dismissDeliveryDialog(force: Boolean = false) {
-        if (!force && System.currentTimeMillis() - deliveryStartTime < 5000) {
-            return // Ignore "not delivering" messages if we literally just asked to bolus <5 seconds ago
-        }
-        
-        deliveryDialog?.let {
-            if (it.isShowing) {
-                it.dismiss()
-            }
-        }
+        if (!force && System.currentTimeMillis() - deliveryStartTime < 5000) return
+        deliveryDialog?.dismiss()
         deliveryDialog = null
         deliveryTimeoutHandler.removeCallbacks(deliveryTimeoutRunnable)
         onBolusDeliveryEnded()
     }
 
     fun onBolusDeliveryStarted() {
-        val btnBolus: Button = findViewById(R.id.btnBolus)
-        val etBolusUnits: EditText = findViewById(R.id.etBolusUnits)
-        btnBolus.text = "DELIVERING..."
-        btnBolus.isEnabled = false
-        etBolusUnits.setText("")
-        etBolusUnits.isEnabled = false
+        findViewById<Button>(R.id.btnBolus).apply { text = "DELIVERING..."; isEnabled = false }
     }
 
     fun onBolusDeliveryEnded() {
-        val btnBolus: Button = findViewById(R.id.btnBolus)
-        val etBolusUnits: EditText = findViewById(R.id.etBolusUnits)
-        btnBolus.text = "BOLUS"
-        btnBolus.isEnabled = true
-        etBolusUnits.isEnabled = true
+        findViewById<Button>(R.id.btnBolus).apply { text = "BOLUS"; isEnabled = true }
     }
 }

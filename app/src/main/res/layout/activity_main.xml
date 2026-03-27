@@ -5,22 +5,26 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:gravity="center_horizontal"
-    android:padding="24dp">
+    android:background="#1A1A2E"
+    android:padding="20dp">
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="GarD Command Center"
-        android:textSize="28sp"
-        android:layout_marginBottom="16dp"/>
+        android:textColor="#E0E0FF"
+        android:textSize="26sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp"/>
 
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Status: Idle"
-        android:textSize="18sp"
-        android:layout_marginBottom="16dp"/>
+        android:textColor="#90CAF9"
+        android:textSize="16sp"
+        android:layout_marginBottom="12dp"/>
 
     <!-- CONNECTION SCREEN -->
     <LinearLayout
@@ -35,6 +39,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="Pairing Code (if new pump)"
+            android:textColorHint="#888"
+            android:textColor="#E0E0FF"
             android:textSize="18sp"
             android:layout_marginBottom="16dp"
             android:gravity="center"/>
@@ -57,66 +63,191 @@
         android:visibility="gone"
         android:gravity="center">
 
-        <TextView
-            android:id="@+id/tvCGM"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="CGM: NA"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="8dp"/>
-
-        <TextView
-            android:id="@+id/tvBattery"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Battery: --%"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="8dp"/>
-
-        <TextView
-            android:id="@+id/tvIOB"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="IOB: -- U"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="8dp"/>
-
-        <TextView
-            android:id="@+id/tvInsulin"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Insulin Remaining: -- U"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="16dp"/>
-            
+        <!-- Status row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center"
-            android:layout_marginBottom="16dp">
-            
+            android:layout_marginBottom="4dp">
+
+            <TextView
+                android:id="@+id/tvCGM"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="CGM: NA"
+                android:textColor="#80CBC4"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="center"/>
+
+            <TextView
+                android:id="@+id/tvBattery"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="Battery: --%"
+                android:textColor="#80CBC4"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="center"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:id="@+id/tvIOB"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="IOB: -- U"
+                android:textColor="#CE93D8"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="center"/>
+
+            <TextView
+                android:id="@+id/tvInsulin"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="Reservoir: -- U"
+                android:textColor="#CE93D8"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:gravity="center"/>
+        </LinearLayout>
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#333355"
+            android:layout_marginBottom="12dp"/>
+
+        <!-- Bolus units + button -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Total Units:"
+                android:textColor="#E0E0FF"
+                android:textSize="16sp"
+                android:layout_marginEnd="8dp"/>
+
             <EditText
                 android:id="@+id/etBolusUnits"
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:hint="Units"
+                android:hint="e.g. 5.0"
+                android:textColorHint="#888"
+                android:textColor="#FFFFFF"
                 android:inputType="numberDecimal"
-                android:textSize="18sp"/>
-                
+                android:textSize="18sp"
+                android:backgroundTint="#444466"/>
+
             <Button
                 android:id="@+id/btnBolus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
                 android:text="BOLUS"
                 android:textColor="#FFFFFF"
                 app:backgroundTint="#D32F2F" />
         </LinearLayout>
+
+        <!-- Extended Duration -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="6dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="Extended Duration (min):"
+                android:textColor="#B0BEC5"
+                android:textSize="14sp"/>
+
+            <EditText
+                android:id="@+id/etExtendedMinutes"
+                android:layout_width="70dp"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:text="0"
+                android:textColor="#FFFFFF"
+                android:gravity="center"
+                android:backgroundTint="#444466"/>
+        </LinearLayout>
+
+        <!-- Units Now (hidden until duration > 0) -->
+        <LinearLayout
+            android:id="@+id/layoutUnitsNow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:visibility="gone"
+            android:layout_marginBottom="6dp">
+
+            <TextView
+                android:id="@+id/tvUnitsNowLabel"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="Units Now:"
+                android:textColor="#B0BEC5"
+                android:textSize="14sp"/>
+
+            <EditText
+                android:id="@+id/etUnitsNow"
+                android:layout_width="70dp"
+                android:layout_height="wrap_content"
+                android:inputType="numberDecimal"
+                android:text="0"
+                android:textColor="#FFFFFF"
+                android:gravity="center"
+                android:backgroundTint="#444466"/>
+        </LinearLayout>
+
+        <!-- Session progress summary -->
+        <LinearLayout
+            android:id="@+id/layoutBolusProgress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#0D2137"
+            android:padding="10dp"
+            android:layout_marginTop="10dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvBolusProgress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:textColor="#FFEB3B"
+                android:text=""/>
+        </LinearLayout>
+
     </LinearLayout>
 
     <Button
@@ -124,13 +255,14 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="COPY LOGS"
-        android:layout_marginBottom="16dp"/>
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="8dp"/>
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="#111111"
+        android:background="#0D0D1A"
         android:visibility="gone"
         android:padding="8dp">
 
