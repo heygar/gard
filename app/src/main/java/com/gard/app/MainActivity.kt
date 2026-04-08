@@ -1,17 +1,18 @@
 package com.gard.app
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.CheckBox
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.jwoglom.pumpx2.pump.bluetooth.TandemBluetoothHandler
 import timber.log.Timber
 import android.view.View
 import android.os.Handler
@@ -27,67 +28,130 @@ import android.widget.LinearLayout
 import android.text.Editable
 import android.text.TextWatcher
 import androidx.biometric.BiometricPrompt
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import java.util.Locale
+import android.view.MotionEvent
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), PumpUpdateListener {
+
 
     companion object {
-        const val NOTIFICATION_ID = 1001
-        const val CHANNEL_ID = "gard_extended_bolus"
         const val ACTION_CANCEL_EXTENDED = "com.gard.app.CANCEL_EXTENDED"
     }
 
     private val cancelReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_CANCEL_EXTENDED) {
-                myPump.cancelExtendedBolus()
+                pumpService?.myPump?.cancelExtendedBolus()
             }
         }
     }
 
     private val cgmReceiver = CgmBroadcastReceiver { glucose, timestamp ->
-        updateCGM(glucose)
-        appendLog("CGM Update via Broadcast: $glucose at $timestamp")
+        appendLog("Ignored Broadcast CGM: $glucose at $timestamp")
     }
 
     private lateinit var layoutConnect: View
     private lateinit var layoutMain: View
     private lateinit var tvStatus: TextView
     private lateinit var tvBattery: TextView
+    private lateinit var tvIOB: TextView
+    private lateinit var tvInsulin: TextView
     private lateinit var etPairingCode: EditText
     private lateinit var btnConnect: Button
     private lateinit var tvLog: TextView
+    private lateinit var viewConnDot: View
+    private lateinit var cbUploadToCloud: CheckBox
+    private lateinit var tvCGM: TextView
     
-    private lateinit var myPump: GarDPump
-    private var bluetoothHandler: TandemBluetoothHandler? = null
+    private var pumpService: PumpService? = null
+    private var isBound = false
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(className: ComponentName, service: IBinder) {
+            val binder = service as PumpService.LocalBinder
+            pumpService = binder.getService()
+            isBound = true
+            pumpService?.callback = this@MainActivity
+            
+            // Re-sync UI with current service state
+            pumpService?.myPump?.connectedPeripheral?.let {
+                updateStatus("Connected & Initialized!")
+            }
+
+            // Restore automatic connection if permissions are granted
+            if (hasPermissions()) {
+                pumpService?.startBluetooth("")
+            }
+        }
+
+        override fun onServiceDisconnected(arg0: ComponentName) {
+            isBound = false
+            pumpService = null
+        }
+    }
+    
+    val nsClient = NightscoutClient("https://nightscout.heygar.com/", "YourSecret12!") { msg ->
+        appendLog("NS: $msg")
+    }
+
+    private var isPhysicallyDelivering = false
+    private var activeExtendedCount = 0
+    private var pendingContributions: Map<Int, Double> = emptyMap()
+    
+    private var lastGlucose = 0
+    private var lastGlucoseTimestamp = 0L
+    private var testGlucoseValue = 87
+
+    private var statusTouchDownTime = 0L
+    private val statusLongPressHandler = Handler(Looper.getMainLooper())
+    private val statusLongPressRunnable = Runnable {
+        appendLog("Simulator trigger: starting...")
+        pumpService?.myPump?.startSimulator()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
-        createNotificationChannel()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(cancelReceiver, IntentFilter(ACTION_CANCEL_EXTENDED), RECEIVER_NOT_EXPORTED)
-            registerReceiver(cgmReceiver, IntentFilter(CgmBroadcastReceiver.ACTION_BG_ESTIMATE), RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(cancelReceiver, IntentFilter(ACTION_CANCEL_EXTENDED))
-            registerReceiver(cgmReceiver, IntentFilter(CgmBroadcastReceiver.ACTION_BG_ESTIMATE))
-        }
 
         layoutConnect = findViewById(R.id.layoutConnect)
         layoutMain = findViewById(R.id.layoutMain)
         
         tvStatus = findViewById(R.id.tvStatus)
         tvBattery = findViewById(R.id.tvBattery)
+        tvIOB = findViewById(R.id.tvIOB)
+        tvInsulin = findViewById(R.id.tvInsulin)
         etPairingCode = findViewById(R.id.etPairingCode)
         btnConnect = findViewById(R.id.btnConnect)
         tvLog = findViewById(R.id.tvLog)
+        viewConnDot = findViewById(R.id.viewConnDot)
+        cbUploadToCloud = findViewById(R.id.cbUploadToCloud)
+        tvCGM = findViewById(R.id.tvCGM)
+
+        // Bind the foreground service (start it if not running)
+        val intent = Intent(this, PumpService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+        bindService(intent, connection, BIND_AUTO_CREATE)
+
+        val filterCancel = IntentFilter(ACTION_CANCEL_EXTENDED)
+        val filterCgm = IntentFilter(CgmBroadcastReceiver.ACTION_BG_ESTIMATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(cancelReceiver, filterCancel, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(cgmReceiver, filterCgm, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(cancelReceiver, filterCancel)
+            registerReceiver(cgmReceiver, filterCgm)
+        }
         
         val btnCopyLogs: Button = findViewById(R.id.btnCopyLogs)
         val btnBolus: Button = findViewById(R.id.btnBolus)
@@ -99,8 +163,27 @@ class MainActivity : AppCompatActivity() {
         
         tvUnitsNowLabel.text = "Units Now"
 
-        myPump = GarDPump(this, this)
-        
+        cbUploadToCloud.setOnCheckedChangeListener { _, isChecked ->
+            appendLog("Cloud Sync: ${if (isChecked) "ON" else "OFF"}")
+            if (isChecked && lastGlucose > 0) {
+                nsClient.uploadGlucose(lastGlucose, lastGlucoseTimestamp)
+            }
+        }
+
+        tvCGM.setOnLongClickListener {
+            if (cbUploadToCloud.isChecked) {
+                val currentTest = testGlucoseValue
+                appendLog("TEST SYNC: Sending $currentTest to Nightscout...")
+                nsClient.uploadGlucose(currentTest, System.currentTimeMillis())
+                tvCGM.text = String.format(Locale.getDefault(), "TEST: %d", currentTest)
+                testGlucoseValue++
+                true
+            } else {
+                Toast.makeText(this, "Enable Cloud Sync to test!", Toast.LENGTH_SHORT).show()
+                false
+            }
+        }
+
         Timber.plant(object : Timber.Tree() {
             override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
                 appendLog(message)
@@ -116,23 +199,37 @@ class MainActivity : AppCompatActivity() {
                     layoutUnitsNow.visibility = View.VISIBLE
                 } else {
                     layoutUnitsNow.visibility = View.GONE
-                    etUnitsNow.setText("0")
                 }
             }
         })
 
         btnConnect.setOnClickListener {
-            myPump.pairingCode = etPairingCode.text.toString().trim()
-            checkPermissionsAndStart()
+            val code = etPairingCode.text.toString().trim()
+            if (code.isNotEmpty()) {
+                // Only clear the secret if a NEW code is provided
+                com.jwoglom.pumpx2.pump.PumpState.setJpakeDerivedSecret(this, "")
+            }
+            pumpService?.startBluetooth(code)
         }
 
-        tvStatus.setOnLongClickListener {
-            myPump.startSimulator()
+        tvStatus.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    statusTouchDownTime = System.currentTimeMillis()
+                    statusLongPressHandler.postDelayed(statusLongPressRunnable, 3000)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    statusLongPressHandler.removeCallbacks(statusLongPressRunnable)
+                    if (event.action == MotionEvent.ACTION_UP) {
+                        v.performClick()
+                    }
+                }
+            }
             true
         }
 
         btnCopyLogs.setOnClickListener {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("GarD Logs", tvLog.text.toString())
             clipboard.setPrimaryClip(clip)
             Toast.makeText(this, "Logs Copied to Clipboard!", Toast.LENGTH_SHORT).show()
@@ -141,10 +238,8 @@ class MainActivity : AppCompatActivity() {
         btnBolus.setOnClickListener {
             val totalUnitsStr = etBolusUnits.text.toString()
             val totalUnits = totalUnitsStr.toDoubleOrNull() ?: 0.0
-            
             val extMinStr = etExtendedMinutes.text.toString()
             val extMin = extMinStr.toIntOrNull() ?: 0
-            
             val unitsNowStr = etUnitsNow.text.toString()
             val unitsNow = unitsNowStr.toDoubleOrNull() ?: 0.0
             
@@ -156,16 +251,12 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Units Now cannot exceed Total Units!", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            if (extMin < 0 || extMin > 60) {
+            if (extMin !in 0..60) {
                 Toast.makeText(this, "Extended minutes must be 0-60", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             
             showBiometricPrompt(totalUnits, extMin, unitsNow)
-        }
-
-        if (hasPermissions()) {
-            startBluetooth()
         }
     }
 
@@ -174,6 +265,9 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         return permissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
     }
@@ -184,125 +278,151 @@ class MainActivity : AppCompatActivity() {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         val missing = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
         } else {
-            startBluetooth()
+            pumpService?.startBluetooth("")
         }
     }
 
-    private fun startBluetooth() {
-        tvStatus.text = "Status: Scanning..."
-        try {
-            bluetoothHandler = TandemBluetoothHandler.getInstance(applicationContext, myPump)
-            bluetoothHandler?.startScan()
-        } catch (e: Exception) {
-            tvStatus.text = "Status: Scan Error"
-        }
-    }
-
-    fun appendLog(msg: String) {
-        Log.i("GarDPump-UI", msg)
+    override fun appendLog(msg: String) {
+        // DO NOT call Timber.i(msg) here, as it will cause infinite recursion with the planted tree
         runOnUiThread {
+            if (!::tvLog.isInitialized) return@runOnUiThread
             val currentText = tvLog.text.toString()
-            val newText = if (currentText == "Logs will appear here...") msg else "$currentText\n$msg"
-            tvLog.text = newText
+            val lines = if (currentText == "Logs will appear here...") {
+                mutableListOf(msg)
+            } else {
+                currentText.lines().toMutableList().apply { add(msg) }
+            }
+            if (lines.size > 100) lines.removeAt(0)
+            tvLog.text = lines.joinToString("\n")
         }
     }
 
-    private var pollingRunnable: Runnable? = null
-    private val pollingHandler = Handler(Looper.getMainLooper())
-
-    private fun startStatusPolling() {
-        if (pollingRunnable != null) return
-        pollingRunnable = object : Runnable {
-            override fun run() {
-                myPump.requestRealtimeStatus()
-                pollingHandler.postDelayed(this, 2 * 60 * 1000)
+    override fun updateStatus(status: String) {
+        runOnUiThread {
+            if (!::tvStatus.isInitialized) return@runOnUiThread
+            tvStatus.text = String.format(Locale.getDefault(), "Status: %s", status)
+            if (status == "Connected & Initialized!") {
+                if (::viewConnDot.isInitialized) viewConnDot.setBackgroundColor(Color.GREEN)
+                if (::layoutConnect.isInitialized) layoutConnect.visibility = View.GONE
+                if (::layoutMain.isInitialized) layoutMain.visibility = View.VISIBLE
+            } else if (status.startsWith("Disconnected")) {
+                if (::viewConnDot.isInitialized) viewConnDot.setBackgroundColor(Color.RED)
+            } else if (status == "Scanning...") {
+                if (::viewConnDot.isInitialized) viewConnDot.setBackgroundColor(Color.YELLOW)
             }
         }
-        pollingHandler.postDelayed(pollingRunnable!!, 2 * 60 * 1000)
     }
 
-    private fun stopStatusPolling() {
-        pollingRunnable?.let { pollingHandler.removeCallbacks(it) }
-        pollingRunnable = null
-    }
-
-    fun updateStatus(status: String) {
-        findViewById<TextView>(R.id.tvStatus).text = "Status: $status"
-        if (status == "Connected & Initialized!") {
-            layoutConnect.visibility = View.GONE
-            layoutMain.visibility = View.VISIBLE
-            startStatusPolling()
-        } else if (status.startsWith("Disconnected")) {
-            layoutConnect.visibility = View.VISIBLE
-            layoutMain.visibility = View.GONE
-            stopStatusPolling()
+    override fun updateBattery(percent: Int) {
+        runOnUiThread { 
+            if (::tvBattery.isInitialized) {
+                tvBattery.text = String.format(Locale.getDefault(), "Battery: %d%%", percent)
+            }
         }
     }
 
-    fun updateBattery(percent: Int) {
-        findViewById<TextView>(R.id.tvBattery).text = "Battery: $percent%"
-    }
-
-    fun updateIOB(iob: Double) {
-        findViewById<TextView>(R.id.tvIOB).text = String.format("IOB: %.2f U", iob)
-    }
-
-    fun updateInsulin(units: Int) {
-        findViewById<TextView>(R.id.tvInsulin).text = "Insulin Remaining: $units U"
-    }
-
-    fun updateCGM(cgm: Int) {
-        findViewById<TextView>(R.id.tvCGM).text = if (cgm > 0) "CGM: $cgm mg/dL" else "CGM: NA"
-    }
-
-    fun updateSessionSummary(delivered: Double, total: Double, elapsedMin: Int, totalMin: Int) {
-        val tv = findViewById<TextView>(R.id.tvBolusProgress)
-        val container = findViewById<View>(R.id.layoutBolusProgress)
-        if (total <= 0.0 && totalMin <= 0) {
-            container.visibility = View.GONE
-            return
+    override fun updateIOB(iob: Double) {
+        runOnUiThread { 
+            if (::tvIOB.isInitialized) {
+                tvIOB.text = String.format(Locale.getDefault(), "IOB: %.2f U", iob)
+            }
         }
-        val dFmt = String.format("%.1f", delivered)
-        val tFmt = String.format("%.1f", total)
-        tv.text = if (totalMin > 0) "$dFmt / $tFmt U   in   $elapsedMin / $totalMin min" else "Delivered: $dFmt / $tFmt U"
-        container.visibility = View.VISIBLE
+    }
+
+    override fun updateInsulin(units: Int) {
+        runOnUiThread { 
+            if (::tvInsulin.isInitialized) {
+                tvInsulin.text = String.format(Locale.getDefault(), "Insulin Remaining: %d U", units)
+            }
+        }
+    }
+
+    override fun updateCGM(glucose: Int, trend: String) {
+        runOnUiThread {
+            if (::tvCGM.isInitialized && glucose > 0) {
+                tvCGM.text = String.format(Locale.getDefault(), "CGM: %d mg/dL", glucose)
+                lastGlucose = glucose
+                lastGlucoseTimestamp = System.currentTimeMillis()
+                if (cbUploadToCloud.isChecked) {
+                    nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)
+                }
+            }
+        }
+    }
+
+    override fun uploadGlucoseMulti(entries: List<NightscoutClient.GlucoseEntry>) {
+        if (cbUploadToCloud.isChecked) {
+            nsClient.uploadGlucoseMulti(entries)
+        }
+    }
+
+    override fun setPendingContributions(contribs: Map<Int, Double>) {
+        this.pendingContributions = contribs
+    }
+
+    override fun getPendingContributions(): Map<Int, Double> {
+        return this.pendingContributions
+    }
+
+    override fun updateSessionSummaryMulti(lines: List<String>) {
+        runOnUiThread {
+            val tv = findViewById<TextView>(R.id.tvBolusProgress)
+            val container = findViewById<View>(R.id.layoutBolusProgress)
+            activeExtendedCount = lines.size
+            if (lines.isEmpty()) {
+                if (container != null) container.visibility = View.GONE
+                refreshBolusButtonState()
+                return@runOnUiThread
+            }
+            if (tv != null) tv.text = lines.joinToString("\n")
+            if (container != null) container.visibility = View.VISIBLE
+            refreshBolusButtonState()
+        }
+    }
+
+    override fun markBolusReady() {
+        runOnUiThread {
+            val tv = findViewById<TextView>(R.id.tvBolusProgress)
+            if (tv != null) {
+                tv.text = "READY"
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (tv.text == "READY") {
+                        findViewById<View>(R.id.layoutBolusProgress)?.visibility = View.GONE
+                    }
+                }, 5000)
+            }
+        }
     }
 
     private fun showBiometricPrompt(totalUnits: Double, extMin: Int, unitsNow: Double) {
         val executor = ContextCompat.getMainExecutor(this)
         val biometricPrompt = BiometricPrompt(this, executor,
             object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    super.onAuthenticationError(errorCode, errString)
-                }
-
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     super.onAuthenticationSucceeded(result)
                     showDeliveryDialog(totalUnits, extMin, unitsNow)
-                    myPump.sendBolus(totalUnits, extMin, unitsNow)
-                }
-
-                override fun onAuthenticationFailed() {
-                    super.onAuthenticationFailed()
+                    pumpService?.myPump?.sendBolus(totalUnits, extMin, unitsNow)
                 }
             })
 
         val subtitle = buildString {
             if (extMin > 0) {
-                if (unitsNow > 0) append("NOW: ${String.format("%.2f", unitsNow)} U immediately\n")
-                val volumeExt = totalUnits - unitsNow
-                append("EXTENDED: ${String.format("%.2f", volumeExt)} U over $extMin min")
+                if (unitsNow > 0) append(String.format(Locale.getDefault(), "NOW: %.2f U immediately\n", unitsNow))
+                append(String.format(Locale.getDefault(), "EXTENDED: %.2f U over %d min", totalUnits - unitsNow, extMin))
             } else {
-                append("${String.format("%.2f", totalUnits)} U immediate bolus")
+                append(String.format(Locale.getDefault(), "%.2f U immediate bolus", totalUnits))
             }
         }
 
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Confirm Bolus — $totalUnits U total")
+            .setTitle(String.format(Locale.getDefault(), "Confirm Bolus — %.2f U total", totalUnits))
             .setSubtitle(subtitle)
             .setNegativeButtonText("Cancel")
             .build()
@@ -312,39 +432,22 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(cancelReceiver)
-        unregisterReceiver(cgmReceiver)
-    }
-
-    private fun createNotificationChannel() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val name = "Extended Bolus"
-            val importance = NotificationManager.IMPORTANCE_HIGH
-            val channel = NotificationChannel(CHANNEL_ID, name, importance)
-            val notificationManager: NotificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
+        if (isBound) {
+            unbindService(connection)
+            isBound = false
         }
+        try {
+            unregisterReceiver(cancelReceiver)
+            unregisterReceiver(cgmReceiver)
+        } catch (e: Exception) {}
     }
 
-    fun updateExtendedNotification(total: Double, delivered: Double, remainingMins: Int) {
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val cancelIntent = Intent(ACTION_CANCEL_EXTENDED)
-        val cancelPendingIntent = PendingIntent.getBroadcast(this, 0, cancelIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_preferences)
-            .setContentTitle("Extended Bolus Active")
-            .setContentText("Delivered ${String.format("%.2f", delivered)} / ${String.format("%.2f", total)} U ($remainingMins min left)")
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "CANCEL EXTENDED", cancelPendingIntent)
-            
-        notificationManager.notify(NOTIFICATION_ID, builder.build())
+    override fun updateExtendedNotification(total: Double, delivered: Double, remainingMins: Int) {
+        // Handled in Service
     }
 
-    fun cancelExtendedNotification() {
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.cancel(NOTIFICATION_ID)
+    override fun cancelExtendedNotification() {
+        // Handled in Service
     }
 
     private var deliveryDialog: AlertDialog? = null
@@ -366,7 +469,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         val tv = TextView(this).apply {
-            text = "Delivering ${String.format("%.2f", totalUnits)} U total...\nPlease Wait."
+            text = String.format(Locale.getDefault(), "Delivering %.2f U total...\nPlease Wait.", totalUnits)
             setTextColor(Color.WHITE)
             textSize = 24f
             gravity = Gravity.CENTER
@@ -384,19 +487,51 @@ class MainActivity : AppCompatActivity() {
         deliveryTimeoutHandler.postDelayed(deliveryTimeoutRunnable, 60000)
     }
 
-    fun dismissDeliveryDialog(force: Boolean = false) {
+    override fun dismissDeliveryDialog(force: Boolean) {
         if (!force && System.currentTimeMillis() - deliveryStartTime < 5000) return
-        deliveryDialog?.dismiss()
-        deliveryDialog = null
-        deliveryTimeoutHandler.removeCallbacks(deliveryTimeoutRunnable)
-        onBolusDeliveryEnded()
+        runOnUiThread {
+            deliveryDialog?.dismiss()
+            deliveryDialog = null
+            deliveryTimeoutHandler.removeCallbacks(deliveryTimeoutRunnable)
+            onBolusDeliveryEnded()
+        }
     }
 
     fun onBolusDeliveryStarted() {
-        findViewById<Button>(R.id.btnBolus).apply { text = "DELIVERING..."; isEnabled = false }
+        isPhysicallyDelivering = true
+        refreshBolusButtonState()
+        runOnUiThread {
+            findViewById<EditText>(R.id.etBolusUnits)?.isEnabled = false
+            findViewById<EditText>(R.id.etExtendedMinutes)?.isEnabled = false
+            findViewById<EditText>(R.id.etUnitsNow)?.isEnabled = false
+        }
     }
 
     fun onBolusDeliveryEnded() {
-        findViewById<Button>(R.id.btnBolus).apply { text = "BOLUS"; isEnabled = true }
+        isPhysicallyDelivering = false
+        refreshBolusButtonState()
+        runOnUiThread {
+            findViewById<EditText>(R.id.etBolusUnits)?.apply { isEnabled = true; setText("") }
+            findViewById<EditText>(R.id.etExtendedMinutes)?.apply { isEnabled = true; setText("") }
+            findViewById<EditText>(R.id.etUnitsNow)?.apply { isEnabled = true; setText("") }
+        }
+    }
+
+    private fun refreshBolusButtonState() {
+        runOnUiThread {
+            val btnBolus = findViewById<Button>(R.id.btnBolus)
+            if (btnBolus != null) {
+                if (isPhysicallyDelivering) {
+                    btnBolus.text = "DELIVERING..."
+                    btnBolus.isEnabled = false
+                } else if (activeExtendedCount >= 3) {
+                    btnBolus.text = "MAX REACHED"
+                    btnBolus.isEnabled = false
+                } else {
+                    btnBolus.text = "BOLUS"
+                    btnBolus.isEnabled = true
+                }
+            }
+        }
     }
 }

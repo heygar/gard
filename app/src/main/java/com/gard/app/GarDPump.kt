@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.jwoglom.pumpx2.pump.bluetooth.PumpReadyState
+import com.jwoglom.pumpx2.pump.TandemError
 import com.welie.blessed.HciStatus
 import com.welie.blessed.BluetoothPeripheral
 import android.bluetooth.le.ScanResult
@@ -12,51 +13,78 @@ import com.jwoglom.pumpx2.pump.bluetooth.TandemPump
 import com.jwoglom.pumpx2.pump.messages.Message
 import com.jwoglom.pumpx2.pump.messages.bluetooth.PumpStateSupplier
 import com.jwoglom.pumpx2.pump.messages.builders.CurrentBatteryRequestBuilder
+import com.jwoglom.pumpx2.pump.messages.builders.LastBolusStatusRequestBuilder
 import com.jwoglom.pumpx2.pump.messages.request.control.BolusPermissionRequest
 import com.jwoglom.pumpx2.pump.messages.request.control.InitiateBolusRequest
 import com.jwoglom.pumpx2.pump.messages.request.currentStatus.*
 import com.jwoglom.pumpx2.pump.messages.response.control.BolusPermissionResponse
 import com.jwoglom.pumpx2.pump.messages.response.control.InitiateBolusResponse
 import com.jwoglom.pumpx2.pump.messages.response.currentStatus.*
+import com.jwoglom.pumpx2.pump.messages.response.historyLog.DexcomG6CGMHistoryLog
+import com.jwoglom.pumpx2.pump.messages.response.historyLog.DexcomG7CGMHistoryLog
+import com.jwoglom.pumpx2.pump.messages.response.historyLog.HistoryLogStreamResponse
+import com.jwoglom.pumpx2.pump.messages.helpers.Dates
 import java.util.Locale
 import kotlin.math.*
 
-class GarDPump(context: Context, val activity: MainActivity) : TandemPump(context) {
+data class ExtendedBolusSession(
+    val id: Int,
+    val totalUnits: Double,
+    val totalMinutes: Int,
+    val unitsNow: Double,
+    var deliveredUnits: Double = 0.0,
+    var remainingMinutes: Int
+) {
+    val extendedVolume: Double = totalUnits - unitsNow
+    val pulseSize: Double = if (totalMinutes > 0) extendedVolume / max(1.0, ceil(totalMinutes / 2.0)) else 0.0
+}
 
+interface PumpUpdateListener {
+    fun appendLog(msg: String)
+    fun updateStatus(status: String)
+    fun updateBattery(percent: Int)
+    fun updateIOB(iob: Double)
+    fun updateInsulin(units: Int)
+    fun updateCGM(glucose: Int, trend: String)
+    fun updateSessionSummaryMulti(lines: List<String>)
+    fun updateExtendedNotification(total: Double, delivered: Double, remainingMins: Int)
+    fun cancelExtendedNotification()
+    fun dismissDeliveryDialog(force: Boolean)
+    fun getPendingContributions(): Map<Int, Double>
+    fun setPendingContributions(contribs: Map<Int, Double>)
+    fun markBolusReady()
+    fun uploadGlucoseMulti(entries: List<NightscoutClient.GlucoseEntry>)
+}
+
+class GarDPump(context: Context) : TandemPump(context) {
+
+    var callback: PumpUpdateListener? = null
     var pairingCode: String = ""
     var connectedPeripheral: BluetoothPeripheral? = null
     var pendingVolumeNow: Long = 0L
     
-    // Distinguish between the user's "Now" bolus and the background "Micro" pulses
     var pendingIsMicroPulse: Boolean = false
+    var pendingBolusWaiting: Boolean = false
     var isPumpCurrentlyDelivering: Boolean = false
     var isSimulatorMode: Boolean = false
 
-    // Active extended bolus queue
-    var extTotalUnits: Double = 0.0
-    var extDeliveredUnits: Double = 0.0
-    var extRemainingMinutes: Int = 0
-    var extPulseSize: Double = 0.0
-    var extIsDelivering: Boolean = false
-    var lastPulseTickTime: Long = 0
+    private val activeSessions = mutableListOf<ExtendedBolusSession>()
+    private var nextSessionId = 1
+    private var lastPulseTickTime: Long = 0
 
-    // Session-level accumulators (never reset between boluses)
-    var sessionTotalUnits: Double = 0.0
-    var sessionTotalMinutes: Int = 0
-    var sessionDeliveredUnits: Double = 0.0
-    var sessionElapsedMinutes: Int = 0
+    private val bolusIdToSessionId = mutableMapOf<Int, Int>() 
+    private val bolusIdToContributions = mutableMapOf<Int, Map<Int, Double>>()
+    private val processedBolusIds = mutableSetOf<Int>()
+
+    private var lastHistorySequenceNum: Long = -1
 
     private fun getDummyPeripheral(): BluetoothPeripheral {
-        return TandemBluetoothHandler.getInstance(activity, this).central.getPeripheral("00:00:00:00:00:00")
+        return TandemBluetoothHandler.getInstance(context, this).central.getPeripheral("00:00:00:00:00:00")
     }
 
-    /**
-     * DUMMY/MOCK MODE: Overriding sendCommand intercepts pump comms 
-     * without modifying the library project.
-     */
     override fun sendCommand(peripheral: BluetoothPeripheral, message: Message) {
         if (isSimulatorMode) {
-            activity.appendLog("SIM: Intercepted ${message.javaClass.simpleName}")
+            callback?.appendLog("SIM: Intercepted ${message.javaClass.simpleName}")
             simulatePumpResponse(peripheral, message)
             return
         }
@@ -65,8 +93,7 @@ class GarDPump(context: Context, val activity: MainActivity) : TandemPump(contex
 
     private fun simulatePumpResponse(peripheral: BluetoothPeripheral, request: Message) {
         val handler = Handler(Looper.getMainLooper())
-        // Simulate BT latency
-        handler.postDelayed({
+        handler.post {
             val response: Message? = when (request) {
                 is ApiVersionRequest -> ApiVersionResponse(1, 1)
                 is TimeSinceResetRequest -> TimeSinceResetResponse(1000, 1000)
@@ -77,7 +104,6 @@ class GarDPump(context: Context, val activity: MainActivity) : TandemPump(contex
                 is BolusPermissionRequest -> BolusPermissionResponse(0, (1000..9999).random(), 0)
                 is InitiateBolusRequest -> {
                     isPumpCurrentlyDelivering = true
-                    // Simulate completion after 3 seconds
                     handler.postDelayed({ isPumpCurrentlyDelivering = false }, 3000)
                     InitiateBolusResponse(0, request.bolusID, 0)
                 }
@@ -88,39 +114,32 @@ class GarDPump(context: Context, val activity: MainActivity) : TandemPump(contex
                         CurrentBolusStatusResponse.CurrentBolusStatus.ALREADY_DELIVERED_OR_INVALID.id
                     CurrentBolusStatusResponse(statusId, 0, 0L, 0L, 0, 0)
                 }
+                is LastBolusStatusV2Request -> LastBolusStatusV2Response(0, 123, 1000L, 1000L, 3, 8, 8, 0L, 1000L)
+                is CurrentEGVGuiDataRequest -> CurrentEGVGuiDataResponse(1000L, 150, 1, 0)
+                is HistoryLogStatusRequest -> HistoryLogStatusResponse(100, 0, 100)
+                is HistoryLogRequest -> HistoryLogResponse(0, 1)
                 else -> null
             }
-            response?.let { 
-                onReceiveMessage(peripheral, it) 
-            }
-        }, 500)
+            response?.let { onReceiveMessage(peripheral, it) }
+        }
     }
 
     fun startSimulator() {
         this.isSimulatorMode = true
-        activity.appendLog("--- SIMULATOR ENABLED ---")
-        // Manually trigger the "Connected" lifecycle
+        callback?.appendLog("--- SIMULATOR ENABLED ---")
         onPumpConnected(getDummyPeripheral())
     }
 
-    override fun onPumpDiscovered(
-        peripheral: BluetoothPeripheral,
-        scanResult: ScanResult?,
-        readyState: PumpReadyState
-    ): Boolean {
-        activity.appendLog("Discovered: ${peripheral.name}")
+    override fun onPumpDiscovered(peripheral: BluetoothPeripheral, scanResult: ScanResult?, readyState: PumpReadyState): Boolean {
+        callback?.appendLog("Discovered: ${peripheral.name}")
         return true
     }
 
     override fun onInitialPumpConnection(peripheral: BluetoothPeripheral) {
         if (isSimulatorMode) return
-        activity.appendLog("Initial Pump Connection Hook Fired")
-        
-        val savedCode = com.jwoglom.pumpx2.pump.PumpState.getPairingCode(activity) ?: ""
+        val savedCode = com.jwoglom.pumpx2.pump.PumpState.getPairingCode(context) ?: ""
         val effectiveCode = pairingCode.ifBlank { savedCode }
-        
         if (effectiveCode.length == 6) {
-            activity.appendLog("6-Digit Code Detected. Bypassing Legacy 16-Char CentralChallengeRequest.")
             onWaitingForPairingCode(peripheral, null)
         } else {
             super.onInitialPumpConnection(peripheral)
@@ -130,126 +149,127 @@ class GarDPump(context: Context, val activity: MainActivity) : TandemPump(contex
     override fun onPumpConnected(peripheral: BluetoothPeripheral) {
         if (!isSimulatorMode) super.onPumpConnected(peripheral)
         this.connectedPeripheral = peripheral
-        activity.appendLog("Connected: ${peripheral.address}")
-        activity.runOnUiThread { 
-            activity.updateStatus("Connected & Initialized!") 
-        }
+        callback?.updateStatus("Connected & Initialized!")
     }
 
-    override fun onReceiveQualifyingEvent(
-        peripheral: BluetoothPeripheral,
-        events: MutableSet<com.jwoglom.pumpx2.pump.messages.response.qualifyingEvent.QualifyingEvent>
-    ) {
-        activity.appendLog("Qualifying Event: $events")
+    override fun onReceiveQualifyingEvent(peripheral: BluetoothPeripheral, events: MutableSet<com.jwoglom.pumpx2.pump.messages.response.qualifyingEvent.QualifyingEvent>) {
         requestRealtimeStatus()
     }
 
-    override fun onWaitingForPairingCode(
-        peripheral: BluetoothPeripheral,
-        centralChallenge: com.jwoglom.pumpx2.pump.messages.response.authentication.AbstractCentralChallengeResponse?
-    ) {
+    override fun onWaitingForPairingCode(peripheral: BluetoothPeripheral, centralChallenge: com.jwoglom.pumpx2.pump.messages.response.authentication.AbstractCentralChallengeResponse?) {
         if (isSimulatorMode) return
-        val savedCode = com.jwoglom.pumpx2.pump.PumpState.getPairingCode(activity) ?: ""
+        val savedCode = com.jwoglom.pumpx2.pump.PumpState.getPairingCode(context) ?: ""
         val effectiveCode = pairingCode.ifBlank { savedCode }
-        
-        activity.appendLog("Waiting for Pairing Code")
-        if (effectiveCode.isNotBlank()) {
-            activity.appendLog("Submitting Pairing Code: $effectiveCode")
-            this.pair(peripheral, centralChallenge, effectiveCode)
-        } else {
-            activity.appendLog("NO PAIRING CODE PROVIDED! App will loop connection requests.")
-        }
+        if (effectiveCode.isNotBlank()) this.pair(peripheral, centralChallenge, effectiveCode)
     }
 
     override fun onPumpDisconnected(peripheral: BluetoothPeripheral, status: HciStatus): Boolean {
         if (isSimulatorMode) return false
-        activity.appendLog("Disconnected: $status")
         this.connectedPeripheral = null
-        activity.runOnUiThread { activity.updateStatus("Disconnected") }
-        
-        if (status == HciStatus.REMOTE_USER_TERMINATED_CONNECTION || status == HciStatus.CONNECTION_TERMINATED_BY_LOCAL_HOST) {
-            if (peripheral.bondState == com.welie.blessed.BondState.BONDED) {
-                activity.appendLog("Pump rejected our old keys. Nuking stale Android OS bond!!")
-                val handler = TandemBluetoothHandler.getInstance(activity.applicationContext, this)
-                handler.central.removeBond(peripheral.address)
-                return false
-            } else {
-                 return false
-            }
-        }
-
+        callback?.updateStatus("Disconnected")
         return super.onPumpDisconnected(peripheral, status)
     }
 
     override fun onReceiveMessage(peripheral: BluetoothPeripheral, message: Message) {
-        activity.appendLog("Message: $message")
+        callback?.appendLog("Message: $message")
         when (message) {
             is TimeSinceResetResponse -> {
-                activity.runOnUiThread { 
-                    activity.updateStatus("Connected & Initialized!") 
-                }
+                callback?.updateStatus("Connected & Initialized!")
                 requestRealtimeStatus()
             }
             is CurrentBatteryAbstractResponse -> {
-                val pct = message.batteryPercent
-                activity.runOnUiThread { activity.updateBattery(pct) }
+                callback?.updateBattery(message.batteryPercent)
             }
             is ControlIQIOBResponse -> {
-                val iob = message.pumpDisplayedIOB / 1000.0
-                activity.runOnUiThread { activity.updateIOB(iob) }
+                callback?.updateIOB(message.pumpDisplayedIOB / 1000.0)
             }
             is InsulinStatusResponse -> {
-                activity.appendLog("Parsed Insulin Remaining: ${message.currentInsulinAmount}")
-                activity.runOnUiThread { activity.updateInsulin(message.currentInsulinAmount) }
+                callback?.updateInsulin(message.currentInsulinAmount)
             }
             is CurrentEGVGuiDataResponse -> {
-                activity.runOnUiThread { activity.updateCGM(message.cgmReading) }
+                val trend = when (message.trendRate) {
+                    1 -> "FortyFiveUp"
+                    2 -> "SingleUp"
+                    3 -> "DoubleUp"
+                    -1 -> "FortyFiveDown"
+                    -2 -> "SingleDown"
+                    -3 -> "DoubleDown"
+                    else -> "Flat"
+                }
+                callback?.updateCGM(message.cgmReading, trend)
+            }
+            is HistoryLogStatusResponse -> {
+                val startSeq = if (lastHistorySequenceNum == -1L) {
+                    message.lastSequenceNum - 50 // Just get last 50 entries initially
+                } else {
+                    lastHistorySequenceNum + 1
+                }
+                
+                if (startSeq <= message.lastSequenceNum) {
+                    val count = (message.lastSequenceNum - startSeq + 1).coerceAtMost(20).toInt()
+                    if (count > 0) {
+                        sendCommand(peripheral, HistoryLogRequest(max(0, startSeq), count))
+                    }
+                }
+            }
+            is HistoryLogStreamResponse -> {
+                val entries = mutableListOf<NightscoutClient.GlucoseEntry>()
+                message.historyLogs.forEach { log ->
+                    lastHistorySequenceNum = max(lastHistorySequenceNum, log.sequenceNum)
+                    
+                    if (log is DexcomG6CGMHistoryLog) {
+                        val timestamp = Dates.fromJan12008ToUnixEpochSeconds(log.timeStampSeconds) * 1000
+                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, "Flat"))
+                    } else if (log is DexcomG7CGMHistoryLog) {
+                        val timestamp = Dates.fromJan12008ToUnixEpochSeconds(log.egvTimestamp) * 1000
+                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, "Flat"))
+                    }
+                }
+                if (entries.isNotEmpty()) {
+                    callback?.uploadGlucoseMulti(entries)
+                }
             }
             is BolusPermissionResponse -> {
                 if (message.status == 0) {
                     val bolusId = message.bolusId
-                    activity.appendLog("Bolus Permission Granted! ID: $bolusId")
-                    val req = InitiateBolusRequest(
-                        this.pendingVolumeNow,
-                        bolusId,
-                        com.jwoglom.pumpx2.pump.messages.response.historyLog.BolusDeliveryHistoryLog.BolusType.toBitmask(
-                            com.jwoglom.pumpx2.pump.messages.response.historyLog.BolusDeliveryHistoryLog.BolusType.FOOD2
-                        ),
-                        0L, 0L, 0, 0, 0
-                    )
+                    if (pendingIsMicroPulse) {
+                        bolusIdToContributions[bolusId] = callback?.getPendingContributions() ?: emptyMap()
+                    } else {
+                        activeSessions.lastOrNull()?.let { bolusIdToSessionId[bolusId] = it.id }
+                    }
+                    val req = InitiateBolusRequest(this.pendingVolumeNow, bolusId, 8, 0L, 0L, 0, 0, 0)
                     sendCommand(peripheral, req)
-                    activity.appendLog("Bolus Transmitted to Pump.")
                 } else {
-                    activity.appendLog("Bolus Permission DENIED by pump (Status ${message.status})")
-                    activity.runOnUiThread { activity.dismissDeliveryDialog(true) }
-                }
-            }
-            is InitiateBolusResponse -> {
-                activity.appendLog("InitiateBolusResponse received: Status ${message.status}")
-                if (message.status == 0) {
-                    val deliveredNow = this.pendingVolumeNow / 1000.0
-                    
-                    // FIXED: Only credit to extended total if this was actually a micro-pulse!
-                    if (extIsDelivering && pendingIsMicroPulse) {
-                        extDeliveredUnits += deliveredNow
-                    }
-                    sessionDeliveredUnits += deliveredNow
-                    
-                    activity.runOnUiThread {
-                        activity.updateExtendedNotification(extTotalUnits, extDeliveredUnits, extRemainingMinutes)
-                        activity.updateSessionSummary(sessionDeliveredUnits, sessionTotalUnits, sessionElapsedMinutes, sessionTotalMinutes)
-                    }
-                } else {
-                    activity.runOnUiThread { activity.dismissDeliveryDialog(true) }
+                    callback?.dismissDeliveryDialog(true)
                 }
             }
             is CurrentBolusStatusResponse -> {
-                val status = message.status
-                val isDelivering = (status == CurrentBolusStatusResponse.CurrentBolusStatus.DELIVERING ||
-                                  status == CurrentBolusStatusResponse.CurrentBolusStatus.REQUESTING)
-                
-                if (!isDelivering) {
-                    activity.runOnUiThread { activity.dismissDeliveryDialog(false) }
+                isPumpCurrentlyDelivering = (message.status == CurrentBolusStatusResponse.CurrentBolusStatus.DELIVERING ||
+                                            message.status == CurrentBolusStatusResponse.CurrentBolusStatus.REQUESTING)
+                if (!isPumpCurrentlyDelivering) {
+                    callback?.dismissDeliveryDialog(false)
+                }
+            }
+            is LastBolusStatusAbstractResponse -> {
+                val bid = message.bolusId
+                if (bid != 0 && !processedBolusIds.contains(bid)) {
+                    val actualUnits = message.deliveredVolume / 1000.0
+                    if (bolusIdToContributions.containsKey(bid)) {
+                        val contributions = bolusIdToContributions[bid]!!
+                        val requestedTotal = contributions.values.sum()
+                        val ratio = if (requestedTotal > 0) actualUnits / requestedTotal else 1.0
+                        contributions.forEach { (sid, amount) ->
+                            activeSessions.find { it.id == sid }?.let { it.deliveredUnits += (amount * ratio) }
+                        }
+                        bolusIdToContributions.remove(bid)
+                        processedBolusIds.add(bid)
+                    } else if (bolusIdToSessionId.containsKey(bid)) {
+                        val sid = bolusIdToSessionId[bid]!!
+                        activeSessions.find { it.id == sid }?.let { it.deliveredUnits = actualUnits }
+                        bolusIdToSessionId.remove(bid)
+                        processedBolusIds.add(bid)
+                    }
+                    updateUI()
                 }
             }
         }
@@ -260,109 +280,104 @@ class GarDPump(context: Context, val activity: MainActivity) : TandemPump(contex
         val apiVer = PumpStateSupplier.pumpApiVersion?.get()
         if (apiVer != null) {
             sendCommand(peripheral, CurrentBatteryRequestBuilder.create(apiVer))
-        } else if (isSimulatorMode) {
-             sendCommand(peripheral, CurrentBatteryV2Request())
+            sendCommand(peripheral, LastBolusStatusRequestBuilder.create(apiVer))
         }
         sendCommand(peripheral, ControlIQIOBRequest())
         sendCommand(peripheral, InsulinStatusRequest())
         sendCommand(peripheral, CurrentBolusStatusRequest())
+        sendCommand(peripheral, CurrentEGVGuiDataRequest())
+        sendCommand(peripheral, HistoryLogStatusRequest())
         
-        if (extIsDelivering) {
+        if (pendingBolusWaiting && !pendingIsMicroPulse) {
+            pendingBolusWaiting = false
+            sendCommand(peripheral, BolusPermissionRequest())
+        } else if (activeSessions.isNotEmpty()) {
             triggerNextMicroBolus()
         }
     }
     
     fun triggerNextMicroBolus() {
-        if (!extIsDelivering) return
-        
-        // Throttle: Ensure at least 1m 50s has passed to avoid double-firing on Qualifying Events
+        if (activeSessions.isEmpty() || isPumpCurrentlyDelivering) return
+        val peripheral = this.connectedPeripheral ?: if (isSimulatorMode) getDummyPeripheral() else null
+        if (peripheral == null) return
+
         val now = System.currentTimeMillis()
         if (now - lastPulseTickTime < 110000 && !isSimulatorMode) return 
 
-        if (extRemainingMinutes <= 0) {
-            extIsDelivering = false
-            activity.runOnUiThread { activity.cancelExtendedNotification() }
-            return
+        var combinedPulse = 0.0
+        val currentContributions = mutableMapOf<Int, Double>()
+        val iterator = activeSessions.iterator()
+        while (iterator.hasNext()) {
+            val session = iterator.next()
+            val remainingToExtend = session.totalUnits - session.deliveredUnits
+            if (session.remainingMinutes <= 0 || remainingToExtend < 0.01) {
+                iterator.remove()
+                if (activeSessions.isEmpty()) callback?.markBolusReady()
+                continue
+            }
+            val minutesThisTick = if (session.remainingMinutes >= 2) 2 else session.remainingMinutes
+            val sessionPulse = if (session.remainingMinutes <= minutesThisTick) remainingToExtend else min(session.pulseSize, remainingToExtend)
+            if (sessionPulse > 0) {
+                combinedPulse += sessionPulse
+                currentContributions[session.id] = sessionPulse
+            }
         }
-        
-        val minutesThisTick = if (extRemainingMinutes >= 2) 2 else extRemainingMinutes
-        
-        val safePulse = if (extRemainingMinutes <= minutesThisTick) {
-            // Last pulse: send exactly what's left
-            extTotalUnits - extDeliveredUnits
-        } else {
-            min(extPulseSize, extTotalUnits - extDeliveredUnits)
-        }.coerceAtLeast(0.0)
-        
-        if (safePulse < 0.05) { // Pump minimum bolus is 0.05U
-            extIsDelivering = false
-            activity.runOnUiThread { activity.cancelExtendedNotification() }
+
+        if (combinedPulse < 0.05) {
+            if (activeSessions.isEmpty()) callback?.markBolusReady()
             return
         }
         
         lastPulseTickTime = now
-        extRemainingMinutes -= minutesThisTick
-        sessionElapsedMinutes += minutesThisTick
-        
-        this.pendingVolumeNow = (safePulse * 1000).toLong()
-        this.pendingIsMicroPulse = true // Mark as micro-pulse
-        activity.appendLog(String.format(Locale.getDefault(), "Ext Engine: Queuing micro pulse %.2fU. (%d min left)", safePulse, extRemainingMinutes))
-        
-        val peripheral = this.connectedPeripheral ?: if (isSimulatorMode) getDummyPeripheral() else null
-        if (peripheral == null) {
-            activity.appendLog("Ext Engine: BT dropped, pulse deferred.")
-            extRemainingMinutes += minutesThisTick
-            sessionElapsedMinutes -= minutesThisTick
-            lastPulseTickTime = 0 
-            return
-        }
+        activeSessions.forEach { s -> if (currentContributions.containsKey(s.id)) s.remainingMinutes -= 2 }
+        this.pendingVolumeNow = (combinedPulse * 1000).toLong()
+        this.pendingIsMicroPulse = true
+        callback?.setPendingContributions(currentContributions)
         sendCommand(peripheral, BolusPermissionRequest())
     }
 
+    private fun updateUI() {
+        val sessionStrings = activeSessions.map {
+            val elapsed = max(0, it.totalMinutes - it.remainingMinutes)
+            String.format(Locale.getDefault(), "Bolus %d: %.1f / %.1f U   in   %d / %d min", it.id, it.deliveredUnits, it.totalUnits, elapsed, it.totalMinutes)
+        }
+        
+        callback?.updateSessionSummaryMulti(sessionStrings)
+        if (activeSessions.isNotEmpty()) {
+            val s = activeSessions[0]
+            callback?.updateExtendedNotification(s.totalUnits, s.deliveredUnits, s.remainingMinutes)
+        } else {
+            callback?.cancelExtendedNotification()
+        }
+    }
+
     fun sendBolus(totalUnits: Double, extMin: Int, unitsNow: Double) {
-        if (totalUnits > 10.0) {
-            activity.appendLog("BOLUS DENIED: Exceeds 10.0 unit max!")
-            return
-        }
-        
+        if (totalUnits > 10.0 || (activeSessions.size >= 3 && extMin > 0)) return
         enableActionsAffectingInsulinDelivery()
-        
-        val volumeExtended = totalUnits - unitsNow
-        
-        sessionTotalUnits += totalUnits
-        sessionTotalMinutes += extMin
-        
-        if (extMin > 0 && volumeExtended > 0.0) {
-            this.extTotalUnits = volumeExtended
-            this.extDeliveredUnits = 0.0
-            this.extRemainingMinutes = extMin
-            this.extPulseSize = volumeExtended / max(1.0, ceil(extMin / 2.0))
-            this.extIsDelivering = true
-            this.lastPulseTickTime = System.currentTimeMillis() // Start timer now
-            
-            activity.appendLog(String.format(Locale.getDefault(), "Ext Engine: Armed. %.2fU over %d min. First pulse in 2 min.", volumeExtended, extMin))
-            activity.runOnUiThread { 
-                activity.updateExtendedNotification(extTotalUnits, 0.0, extRemainingMinutes)
-                activity.updateSessionSummary(sessionDeliveredUnits, sessionTotalUnits, sessionElapsedMinutes, sessionTotalMinutes)
-            }
+        if (extMin > 0) {
+            val session = ExtendedBolusSession(nextSessionId++, totalUnits, extMin, unitsNow, 0.0, extMin)
+            activeSessions.add(session)
+            if (activeSessions.size == 1) this.lastPulseTickTime = System.currentTimeMillis()
         }
-        
         if (unitsNow > 0) {
             this.pendingVolumeNow = (unitsNow * 1000).toLong()
-            this.pendingIsMicroPulse = false // Mark as the "Now" part
-            activity.appendLog(String.format(Locale.getDefault(), "Requesting immediate bolus: %.2fU", unitsNow))
+            this.pendingIsMicroPulse = false
+            this.pendingBolusWaiting = true
             val peripheral = this.connectedPeripheral ?: if (isSimulatorMode) getDummyPeripheral() else null
-            if (peripheral == null) return
-            sendCommand(peripheral, BolusPermissionRequest())
+            if (peripheral != null) {
+                pendingBolusWaiting = false
+                sendCommand(peripheral, BolusPermissionRequest())
+            }
+        } else {
+            updateUI()
         }
     }
 
     fun cancelExtendedBolus() {
-        if (extIsDelivering) {
-            activity.appendLog("Ext Engine: Extended Bolus Cancelled by User.")
-            extIsDelivering = false
-            extRemainingMinutes = 0
-            activity.cancelExtendedNotification()
-        }
+        activeSessions.clear()
+        bolusIdToContributions.clear()
+        bolusIdToSessionId.clear()
+        callback?.cancelExtendedNotification()
+        callback?.markBolusReady()
     }
 }

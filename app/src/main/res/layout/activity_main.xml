@@ -15,16 +15,30 @@
         android:textColor="#E0E0FF"
         android:textSize="26sp"
         android:textStyle="bold"
-        android:layout_marginBottom="12dp"/>
+        android:layout_marginBottom="8dp"/>
 
-    <TextView
-        android:id="@+id/tvStatus"
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Status: Idle"
-        android:textColor="#90CAF9"
-        android:textSize="16sp"
-        android:layout_marginBottom="12dp"/>
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="12dp">
+
+        <View
+            android:id="@+id/viewConnDot"
+            android:layout_width="10dp"
+            android:layout_height="10dp"
+            android:background="@android:color/darker_gray"
+            android:layout_marginEnd="8dp"/>
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Status: Idle"
+            android:textColor="#90CAF9"
+            android:textSize="16sp"/>
+    </LinearLayout>
 
     <!-- CONNECTION SCREEN -->
     <LinearLayout
@@ -71,16 +85,31 @@
             android:gravity="center"
             android:layout_marginBottom="4dp">
 
-            <TextView
-                android:id="@+id/tvCGM"
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:text="CGM: NA"
-                android:textColor="#80CBC4"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:gravity="center"/>
+                android:orientation="vertical"
+                android:gravity="center">
+                
+                <TextView
+                    android:id="@+id/tvCGM"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="CGM: NA"
+                    android:textColor="#80CBC4"
+                    android:textSize="16sp"
+                    android:textStyle="bold"/>
+
+                <CheckBox
+                    android:id="@+id/cbUploadToCloud"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Cloud Sync"
+                    android:textColor="#80CBC4"
+                    android:textSize="10sp"
+                    android:visibility="visible"/>
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/tvBattery"
@@ -190,7 +219,8 @@
                 android:layout_width="70dp"
                 android:layout_height="wrap_content"
                 android:inputType="number"
-                android:text="0"
+                android:hint="0"
+                android:textColorHint="#888"
                 android:textColor="#FFFFFF"
                 android:gravity="center"
                 android:backgroundTint="#444466"/>
@@ -220,7 +250,8 @@
                 android:layout_width="70dp"
                 android:layout_height="wrap_content"
                 android:inputType="numberDecimal"
-                android:text="0"
+                android:hint="0"
+                android:textColorHint="#888"
                 android:textColor="#FFFFFF"
                 android:gravity="center"
                 android:backgroundTint="#444466"/>
@@ -259,6 +290,7 @@
         android:layout_marginBottom="8dp"/>
 
     <ScrollView
+        android:id="@+id/scrollLogs"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
