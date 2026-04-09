@@ -163,7 +163,7 @@ class PumpService : Service(), PumpUpdateListener {
         }
 
         val content = buildString {
-            append(String.format(Locale.getDefault(), "IOB: %.2f U | Pump: %d U | Bat: %d%%", currentIOB, currentInsulin, currentBattery))
+            append(String.format(Locale.getDefault(), "IOB: %.2f U | CGM: %d | Bat: %d%%", currentIOB, currentGlucose, currentBattery))
             if (isExtendedActive) {
                 append(String.format(Locale.getDefault(), "\nExt: %.2f / %.2f U (%d min left)", extDelivered, extTotal, extRemaining))
             }
