@@ -124,7 +124,14 @@ class PumpService : Service(), PumpUpdateListener {
         appendLog("Starting status polling (2m intervals)")
         pollingRunnable = object : Runnable {
             override fun run() {
-                myPump.requestRealtimeStatus()
+                if (myPump.connectedPeripheral == null) {
+                    // Watchdog caught a dead connection. Force a scan.
+                    appendLog("Watchdog: Pump disconnected. Restarting scan...")
+                    startBluetooth("")
+                } else {
+                    // Normal behavior
+                    myPump.requestRealtimeStatus()
+                }
                 pollingHandler.postDelayed(this, 2 * 60 * 1000)
             }
         }
@@ -200,6 +207,13 @@ class PumpService : Service(), PumpUpdateListener {
         lastStatus = status
         if (status == "Connected & Initialized!") {
             startStatusPolling()
+        } else if (status == "Disconnected") {
+            // Kick off an auto-reconnect attempt!
+            // We wait 5 seconds to let the Android BLE stack clear out old dead connections.
+            pollingHandler.postDelayed({
+                appendLog("Attempting auto-reconnect...")
+                startBluetooth("")
+            }, 5000)
         }
         updateNotification()
         callback?.updateStatus(status)

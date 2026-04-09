@@ -289,18 +289,18 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         }
     }
 
+    private val logBuffer = java.util.LinkedList<String>()
+
     override fun appendLog(msg: String) {
-        // DO NOT call Timber.i(msg) here, as it will cause infinite recursion with the planted tree
         runOnUiThread {
             if (!::tvLog.isInitialized) return@runOnUiThread
-            val currentText = tvLog.text.toString()
-            val lines = if (currentText == "Logs will appear here...") {
-                mutableListOf(msg)
-            } else {
-                currentText.lines().toMutableList().apply { add(msg) }
+
+            logBuffer.add(msg)
+            if (logBuffer.size > 100) {
+                logBuffer.removeFirst()
             }
-            if (lines.size > 100) lines.removeAt(0)
-            tvLog.text = lines.joinToString("\n")
+
+            tvLog.text = logBuffer.joinToString("\n")
         }
     }
 

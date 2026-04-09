@@ -171,7 +171,7 @@ class GarDPump(context: Context) : TandemPump(context) {
     }
 
     override fun onReceiveMessage(peripheral: BluetoothPeripheral, message: Message) {
-        callback?.appendLog("Message: $message")
+        //callback?.appendLog("Message: $message")
         when (message) {
             is TimeSinceResetResponse -> {
                 callback?.updateStatus("Connected & Initialized!")
