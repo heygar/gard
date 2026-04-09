@@ -188,13 +188,16 @@ class GarDPump(context: Context) : TandemPump(context) {
             }
             is CurrentEGVGuiDataResponse -> {
                 val trend = when (message.trendRate) {
-                    1 -> "FortyFiveUp"
+                    1 -> "DoubleUp"
                     2 -> "SingleUp"
-                    3 -> "DoubleUp"
-                    -1 -> "FortyFiveDown"
-                    -2 -> "SingleDown"
-                    -3 -> "DoubleDown"
-                    else -> "Flat"
+                    3 -> "FortyFiveUp"
+                    4 -> "Flat"
+                    5 -> "FortyFiveDown"
+                    6 -> "SingleDown"
+                    7 -> "DoubleDown"
+                    8 -> "NOT COMPUTABLE"
+					9 -> "RATE OUT OF RANGE"
+                    else -> "NONE"
                 }
                 callback?.updateCGM(message.cgmReading, trend)
             }

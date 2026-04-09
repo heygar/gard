@@ -3,7 +3,6 @@ package com.gard.app
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -13,10 +12,11 @@ import java.util.*
 import kotlin.concurrent.thread
 
 class NightscoutClient(
-    private var baseUrl: String, 
+    baseUrl: String, 
     private var apiSecret: String,
     private val logCallback: ((String) -> Unit)? = null
 ) {
+    private var baseUrl: String = baseUrl.trimEnd('/')
 
     private fun log(msg: String, error: Boolean = false) {
         if (error) Log.e("NightscoutClient", msg) else Log.i("NightscoutClient", msg)
@@ -75,8 +75,8 @@ class NightscoutClient(
                 conn.setRequestProperty("User-Agent", "GarD-Android")
                 
                 if (apiSecret.isNotEmpty()) {
+                    // Send ONLY the hashed secret. Do not send the plain text API-SECRET.
                     conn.setRequestProperty("api-secret", hashed)
-                    conn.setRequestProperty("API-SECRET", apiSecret)
                 }
 
                 conn.doOutput = true
@@ -129,8 +129,8 @@ class NightscoutClient(
                 
                 val hashed = getHashedSecret()
                 if (apiSecret.isNotEmpty()) {
+                    // Send ONLY the hashed secret.
                     conn.setRequestProperty("api-secret", hashed)
-                    conn.setRequestProperty("API-SECRET", apiSecret)
                 }
                 conn.doOutput = true
 
