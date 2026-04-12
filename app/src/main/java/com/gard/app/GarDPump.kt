@@ -66,15 +66,16 @@ class GarDPump(context: Context) : TandemPump(context) {
     var pendingIsMicroPulse: Boolean = false
     var pendingBolusWaiting: Boolean = false
     var isPumpCurrentlyDelivering: Boolean = false
+    @Volatile
     var isSimulatorMode: Boolean = false
 
     private val activeSessions = mutableListOf<ExtendedBolusSession>()
     private var nextSessionId = 1
     private var lastPulseTickTime: Long = 0
 
-    private val bolusIdToSessionId = mutableMapOf<Int, Int>() 
-    private val bolusIdToContributions = mutableMapOf<Int, Map<Int, Double>>()
-    private val processedBolusIds = mutableSetOf<Int>()
+    private val bolusIdToSessionId = java.util.concurrent.ConcurrentHashMap<Int, Int>() 
+    private val bolusIdToContributions = java.util.concurrent.ConcurrentHashMap<Int, Map<Int, Double>>()
+    private val processedBolusIds = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
 
     private var lastHistorySequenceNum: Long = -1
 
@@ -236,7 +237,9 @@ class GarDPump(context: Context) : TandemPump(context) {
                     if (pendingIsMicroPulse) {
                         bolusIdToContributions[bolusId] = callback?.getPendingContributions() ?: emptyMap()
                     } else {
-                        activeSessions.lastOrNull()?.let { bolusIdToSessionId[bolusId] = it.id }
+                        synchronized(activeSessions) {
+                            activeSessions.lastOrNull()?.let { bolusIdToSessionId[bolusId] = it.id }
+                        }
                     }
                     val req = InitiateBolusRequest(this.pendingVolumeNow, bolusId, 8, 0L, 0L, 0, 0, 0)
                     sendCommand(peripheral, req)
@@ -259,14 +262,18 @@ class GarDPump(context: Context) : TandemPump(context) {
                         val contributions = bolusIdToContributions[bid]!!
                         val requestedTotal = contributions.values.sum()
                         val ratio = if (requestedTotal > 0) actualUnits / requestedTotal else 1.0
-                        contributions.forEach { (sid, amount) ->
-                            activeSessions.find { it.id == sid }?.let { it.deliveredUnits += (amount * ratio) }
+                        synchronized(activeSessions) {
+                            contributions.forEach { (sid, amount) ->
+                                activeSessions.find { it.id == sid }?.let { it.deliveredUnits += (amount * ratio) }
+                            }
                         }
                         bolusIdToContributions.remove(bid)
                         processedBolusIds.add(bid)
                     } else if (bolusIdToSessionId.containsKey(bid)) {
                         val sid = bolusIdToSessionId[bid]!!
-                        activeSessions.find { it.id == sid }?.let { it.deliveredUnits = actualUnits }
+                        synchronized(activeSessions) {
+                            activeSessions.find { it.id == sid }?.let { it.deliveredUnits = actualUnits }
+                        }
                         bolusIdToSessionId.remove(bid)
                         processedBolusIds.add(bid)
                     }
@@ -298,7 +305,6 @@ class GarDPump(context: Context) : TandemPump(context) {
     }
     
     fun triggerNextMicroBolus() {
-        if (activeSessions.isEmpty() || isPumpCurrentlyDelivering) return
         val peripheral = this.connectedPeripheral ?: if (isSimulatorMode) getDummyPeripheral() else null
         if (peripheral == null) return
 
@@ -307,30 +313,36 @@ class GarDPump(context: Context) : TandemPump(context) {
 
         var combinedPulse = 0.0
         val currentContributions = mutableMapOf<Int, Double>()
-        val iterator = activeSessions.iterator()
-        while (iterator.hasNext()) {
-            val session = iterator.next()
-            val remainingToExtend = session.totalUnits - session.deliveredUnits
-            if (session.remainingMinutes <= 0 || remainingToExtend < 0.01) {
-                iterator.remove()
-                if (activeSessions.isEmpty()) callback?.markBolusReady()
-                continue
+        
+        synchronized(activeSessions) {
+            if (activeSessions.isEmpty() || isPumpCurrentlyDelivering) return
+            
+            val iterator = activeSessions.iterator()
+            while (iterator.hasNext()) {
+                val session = iterator.next()
+                val remainingToExtend = session.totalUnits - session.deliveredUnits
+                if (session.remainingMinutes <= 0 || remainingToExtend < 0.01) {
+                    iterator.remove()
+                    if (activeSessions.isEmpty()) callback?.markBolusReady()
+                    continue
+                }
+                val minutesThisTick = if (session.remainingMinutes >= 2) 2 else session.remainingMinutes
+                val sessionPulse = if (session.remainingMinutes <= minutesThisTick) remainingToExtend else min(session.pulseSize, remainingToExtend)
+                if (sessionPulse > 0) {
+                    combinedPulse += sessionPulse
+                    currentContributions[session.id] = sessionPulse
+                }
             }
-            val minutesThisTick = if (session.remainingMinutes >= 2) 2 else session.remainingMinutes
-            val sessionPulse = if (session.remainingMinutes <= minutesThisTick) remainingToExtend else min(session.pulseSize, remainingToExtend)
-            if (sessionPulse > 0) {
-                combinedPulse += sessionPulse
-                currentContributions[session.id] = sessionPulse
-            }
-        }
 
-        if (combinedPulse < 0.05) {
-            if (activeSessions.isEmpty()) callback?.markBolusReady()
-            return
+            if (combinedPulse < 0.05) {
+                if (activeSessions.isEmpty()) callback?.markBolusReady()
+                return
+            }
+            
+            lastPulseTickTime = now
+            activeSessions.forEach { s -> if (currentContributions.containsKey(s.id)) s.remainingMinutes -= 2 }
         }
         
-        lastPulseTickTime = now
-        activeSessions.forEach { s -> if (currentContributions.containsKey(s.id)) s.remainingMinutes -= 2 }
         this.pendingVolumeNow = (combinedPulse * 1000).toLong()
         this.pendingIsMicroPulse = true
         callback?.setPendingContributions(currentContributions)
@@ -338,27 +350,36 @@ class GarDPump(context: Context) : TandemPump(context) {
     }
 
     private fun updateUI() {
-        val sessionStrings = activeSessions.map {
-            val elapsed = max(0, it.totalMinutes - it.remainingMinutes)
-            String.format(Locale.getDefault(), "Bolus %d: %.1f / %.1f U   in   %d / %d min", it.id, it.deliveredUnits, it.totalUnits, elapsed, it.totalMinutes)
+        val sessionStrings = synchronized(activeSessions) {
+            activeSessions.map {
+                val elapsed = max(0, it.totalMinutes - it.remainingMinutes)
+                String.format(Locale.getDefault(), "Bolus %d: %.1f / %.1f U   in   %d / %d min", it.id, it.deliveredUnits, it.totalUnits, elapsed, it.totalMinutes)
+            }
         }
         
         callback?.updateSessionSummaryMulti(sessionStrings)
-        if (activeSessions.isNotEmpty()) {
-            val s = activeSessions[0]
-            callback?.updateExtendedNotification(s.totalUnits, s.deliveredUnits, s.remainingMinutes)
-        } else {
-            callback?.cancelExtendedNotification()
+        synchronized(activeSessions) {
+            if (activeSessions.isNotEmpty()) {
+                val s = activeSessions[0]
+                callback?.updateExtendedNotification(s.totalUnits, s.deliveredUnits, s.remainingMinutes)
+            } else {
+                callback?.cancelExtendedNotification()
+            }
         }
     }
 
     fun sendBolus(totalUnits: Double, extMin: Int, unitsNow: Double) {
-        if (totalUnits > 10.0 || (activeSessions.size >= 3 && extMin > 0)) return
         enableActionsAffectingInsulinDelivery()
-        if (extMin > 0) {
-            val session = ExtendedBolusSession(nextSessionId++, totalUnits, extMin, unitsNow, 0.0, extMin)
-            activeSessions.add(session)
-            if (activeSessions.size == 1) this.lastPulseTickTime = System.currentTimeMillis()
+        synchronized(activeSessions) {
+            if (totalUnits > 10.0 || (activeSessions.size >= 3 && extMin > 0)) {
+                callback?.appendLog("Bolus rejected: invalid units or too many active sessions")
+                return
+            }
+            if (extMin > 0) {
+                val session = ExtendedBolusSession(nextSessionId++, totalUnits, extMin, unitsNow, 0.0, extMin)
+                activeSessions.add(session)
+                if (activeSessions.size == 1) this.lastPulseTickTime = 0
+            }
         }
         if (unitsNow > 0) {
             this.pendingVolumeNow = (unitsNow * 1000).toLong()
@@ -371,11 +392,14 @@ class GarDPump(context: Context) : TandemPump(context) {
             }
         } else {
             updateUI()
+            triggerNextMicroBolus()
         }
     }
 
     fun cancelExtendedBolus() {
-        activeSessions.clear()
+        synchronized(activeSessions) {
+            activeSessions.clear()
+        }
         bolusIdToContributions.clear()
         bolusIdToSessionId.clear()
         callback?.cancelExtendedNotification()

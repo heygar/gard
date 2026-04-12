@@ -39,6 +39,8 @@ class PumpService : Service(), PumpUpdateListener {
     private var extDelivered: Double = 0.0
     private var extTotal: Double = 0.0
     private var extRemaining: Int = 0
+    private var isForeground = false
+    private var reconnectCount = 0
 
     companion object {
         const val CHANNEL_ID = "PumpServiceChannel"
@@ -69,6 +71,7 @@ class PumpService : Service(), PumpUpdateListener {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        isForeground = true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -125,11 +128,10 @@ class PumpService : Service(), PumpUpdateListener {
         pollingRunnable = object : Runnable {
             override fun run() {
                 if (myPump.connectedPeripheral == null) {
-                    // Watchdog caught a dead connection. Force a scan.
-                    appendLog("Watchdog: Pump disconnected. Restarting scan...")
-                    startBluetooth("")
+                    // The Disconnected status handler already manages reconnects.
+                    // We just log here for watchdog purposes.
+                    appendLog("Watchdog: Pump currently disconnected.")
                 } else {
-                    // Normal behavior
                     myPump.requestRealtimeStatus()
                 }
                 pollingHandler.postDelayed(this, 2 * 60 * 1000)
@@ -195,7 +197,13 @@ class PumpService : Service(), PumpUpdateListener {
     }
 
     private fun updateNotification() {
-        startServiceForeground()
+        if (isForeground) {
+            val notification = createNotification()
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.notify(NOTIFICATION_ID, notification)
+        } else {
+            startServiceForeground()
+        }
     }
 
     // PumpUpdateListener implementation
@@ -206,17 +214,27 @@ class PumpService : Service(), PumpUpdateListener {
     override fun updateStatus(status: String) {
         lastStatus = status
         if (status == "Connected & Initialized!") {
+            reconnectCount = 0
             startStatusPolling()
         } else if (status == "Disconnected") {
-            // Kick off an auto-reconnect attempt!
-            // We wait 5 seconds to let the Android BLE stack clear out old dead connections.
+            // Kick off an auto-reconnect attempt with exponential backoff!
+            reconnectCount++
+            val delay = (5000L * reconnectCount).coerceAtMost(60000L)
+            appendLog("Auto-reconnect attempt $reconnectCount in ${delay/1000}s...")
             pollingHandler.postDelayed({
-                appendLog("Attempting auto-reconnect...")
-                startBluetooth("")
-            }, 5000)
+                if (lastStatus == "Disconnected") {
+                    startBluetooth("")
+                }
+            }, delay)
         }
         updateNotification()
         callback?.updateStatus(status)
+    }
+
+    override fun onDestroy() {
+        stopStatusPolling()
+        callback = null
+        super.onDestroy()
     }
 
     override fun updateBattery(percent: Int) {

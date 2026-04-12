@@ -132,6 +132,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         tvLog = findViewById(R.id.tvLog)
         viewConnDot = findViewById(R.id.viewConnDot)
         cbUploadToCloud = findViewById(R.id.cbUploadToCloud)
+        cbUploadToCloud.visibility = View.GONE
         tvCGM = findViewById(R.id.tvCGM)
 
         // Bind the foreground service (start it if not running)
@@ -171,17 +172,12 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         }
 
         tvCGM.setOnLongClickListener {
-            if (cbUploadToCloud.isChecked) {
-                val currentTest = testGlucoseValue
-                appendLog("TEST SYNC: Sending $currentTest to Nightscout...")
-                nsClient.uploadGlucose(currentTest, System.currentTimeMillis())
-                tvCGM.text = String.format(Locale.getDefault(), "TEST: %d", currentTest)
-                testGlucoseValue++
-                true
-            } else {
-                Toast.makeText(this, "Enable Cloud Sync to test!", Toast.LENGTH_SHORT).show()
-                false
-            }
+            val currentTest = testGlucoseValue
+            appendLog("TEST SYNC: Sending $currentTest to Nightscout...")
+            nsClient.uploadGlucose(currentTest, System.currentTimeMillis())
+            tvCGM.text = String.format(Locale.getDefault(), "TEST: %d", currentTest)
+            testGlucoseValue++
+            true
         }
 
         Timber.plant(object : Timber.Tree() {
@@ -217,6 +213,9 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
                 MotionEvent.ACTION_DOWN -> {
                     statusTouchDownTime = System.currentTimeMillis()
                     statusLongPressHandler.postDelayed(statusLongPressRunnable, 3000)
+                    statusLongPressHandler.postDelayed({
+                        runOnUiThread { cbUploadToCloud.visibility = View.VISIBLE }
+                    }, 3000)
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     statusLongPressHandler.removeCallbacks(statusLongPressRunnable)
@@ -350,17 +349,13 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
                 tvCGM.text = String.format(Locale.getDefault(), "CGM: %d mg/dL", glucose)
                 lastGlucose = glucose
                 lastGlucoseTimestamp = System.currentTimeMillis()
-                if (cbUploadToCloud.isChecked) {
-                    nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)
-                }
+                nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)
             }
         }
     }
 
     override fun uploadGlucoseMulti(entries: List<NightscoutClient.GlucoseEntry>) {
-        if (cbUploadToCloud.isChecked) {
-            nsClient.uploadGlucoseMulti(entries)
-        }
+        nsClient.uploadGlucoseMulti(entries)
     }
 
     override fun setPendingContributions(contribs: Map<Int, Double>) {
@@ -381,7 +376,12 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
                 refreshBolusButtonState()
                 return@runOnUiThread
             }
-            if (tv != null) tv.text = lines.joinToString("\n")
+            
+            // Only update text if it actually changed to prevent flickering/keyboard issues
+            if (tv != null && tv.text.toString() != lines.joinToString("\n")) {
+                tv.text = lines.joinToString("\n")
+            }
+
             if (container != null) container.visibility = View.VISIBLE
             refreshBolusButtonState()
         }
@@ -431,8 +431,8 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         if (isBound) {
+            pumpService?.callback = null
             unbindService(connection)
             isBound = false
         }
@@ -440,6 +440,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
             unregisterReceiver(cancelReceiver)
             unregisterReceiver(cgmReceiver)
         } catch (e: Exception) {}
+        super.onDestroy()
     }
 
     override fun updateExtendedNotification(total: Double, delivered: Double, remainingMins: Int) {

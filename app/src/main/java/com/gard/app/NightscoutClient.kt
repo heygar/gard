@@ -154,11 +154,11 @@ class NightscoutClient(
     }
 
     object ISO8601Utils {
-        fun format(date: Date): String {
-            val tz = TimeZone.getTimeZone("UTC")
-            val df = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
-            df.timeZone = tz
-            return df.format(date)
+        private val df = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        fun format(date: Date): String = synchronized(this) {
+            df.format(date)
         }
     }
 }
