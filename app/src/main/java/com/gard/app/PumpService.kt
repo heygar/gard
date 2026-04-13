@@ -30,7 +30,10 @@ class PumpService : Service(), PumpUpdateListener {
     private var pollingRunnable: Runnable? = null
 
     // State for notification
-    private var lastStatus: String = "Disconnected"
+    var lastStatus: String = "Disconnected"
+        private set
+    var lastUpdateMillis: Long = 0L
+        private set
     private var currentGlucose: Int = 0
     private var currentIOB: Double = 0.0
     private var currentInsulin: Int = 0
@@ -214,6 +217,7 @@ class PumpService : Service(), PumpUpdateListener {
     override fun updateStatus(status: String) {
         lastStatus = status
         if (status == "Connected & Initialized!") {
+            lastUpdateMillis = System.currentTimeMillis()
             reconnectCount = 0
             startStatusPolling()
         } else if (status == "Disconnected") {
@@ -238,24 +242,28 @@ class PumpService : Service(), PumpUpdateListener {
     }
 
     override fun updateBattery(percent: Int) {
+        lastUpdateMillis = System.currentTimeMillis()
         currentBattery = percent
         updateNotification()
         callback?.updateBattery(percent)
     }
 
     override fun updateIOB(iob: Double) {
+        lastUpdateMillis = System.currentTimeMillis()
         currentIOB = iob
         updateNotification()
         callback?.updateIOB(iob)
     }
 
     override fun updateInsulin(units: Int) {
+        lastUpdateMillis = System.currentTimeMillis()
         currentInsulin = units
         updateNotification()
         callback?.updateInsulin(units)
     }
 
     override fun updateCGM(glucose: Int, trend: String) {
+        lastUpdateMillis = System.currentTimeMillis()
         currentGlucose = glucose
         updateNotification()
         callback?.updateCGM(glucose, trend)

@@ -109,6 +109,37 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     private var lastGlucoseTimestamp = 0L
     private var testGlucoseValue = 87
 
+    private val statusRefreshHandler = Handler(Looper.getMainLooper())
+    private val statusRefreshRunnable = object : Runnable {
+        override fun run() {
+            refreshStatusDisplay()
+            statusRefreshHandler.postDelayed(this, 30000) // Refresh every 30s
+        }
+    }
+
+    private fun refreshStatusDisplay() {
+        val service = pumpService ?: return
+        val lastUpdate = service.lastUpdateMillis
+        val status = service.lastStatus
+        
+        if (status == "Connected & Initialized!" && lastUpdate > 0) {
+            val diffMs = System.currentTimeMillis() - lastUpdate
+            val mins = (diffMs / 60000).toInt()
+            val timeStr = if (mins <= 0) "just now" else if (mins == 1) "1 minute ago" else "$mins minutes ago"
+            tvStatus.text = "Status: $timeStr"
+            viewConnDot.setBackgroundColor(Color.GREEN)
+            layoutConnect.visibility = View.GONE
+            layoutMain.visibility = View.VISIBLE
+        } else {
+            tvStatus.text = "Status: $status"
+            if (status.startsWith("Disconnected")) {
+                viewConnDot.setBackgroundColor(Color.RED)
+            } else if (status == "Scanning...") {
+                viewConnDot.setBackgroundColor(Color.YELLOW)
+            }
+        }
+    }
+
     private var statusTouchDownTime = 0L
     private val statusLongPressHandler = Handler(Looper.getMainLooper())
     private val statusLongPressRunnable = Runnable {
@@ -154,6 +185,8 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
             registerReceiver(cgmReceiver, filterCgm)
         }
         
+        statusRefreshHandler.post(statusRefreshRunnable)
+
         val btnCopyLogs: Button = findViewById(R.id.btnCopyLogs)
         val btnBolus: Button = findViewById(R.id.btnBolus)
         val etBolusUnits: EditText = findViewById(R.id.etBolusUnits)
@@ -306,16 +339,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     override fun updateStatus(status: String) {
         runOnUiThread {
             if (!::tvStatus.isInitialized) return@runOnUiThread
-            tvStatus.text = String.format(Locale.getDefault(), "Status: %s", status)
-            if (status == "Connected & Initialized!") {
-                if (::viewConnDot.isInitialized) viewConnDot.setBackgroundColor(Color.GREEN)
-                if (::layoutConnect.isInitialized) layoutConnect.visibility = View.GONE
-                if (::layoutMain.isInitialized) layoutMain.visibility = View.VISIBLE
-            } else if (status.startsWith("Disconnected")) {
-                if (::viewConnDot.isInitialized) viewConnDot.setBackgroundColor(Color.RED)
-            } else if (status == "Scanning...") {
-                if (::viewConnDot.isInitialized) viewConnDot.setBackgroundColor(Color.YELLOW)
-            }
+            refreshStatusDisplay()
         }
     }
 
@@ -323,6 +347,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         runOnUiThread { 
             if (::tvBattery.isInitialized) {
                 tvBattery.text = String.format(Locale.getDefault(), "Battery: %d%%", percent)
+                refreshStatusDisplay()
             }
         }
     }
@@ -331,6 +356,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         runOnUiThread { 
             if (::tvIOB.isInitialized) {
                 tvIOB.text = String.format(Locale.getDefault(), "IOB: %.2f U", iob)
+                refreshStatusDisplay()
             }
         }
     }
@@ -339,6 +365,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         runOnUiThread { 
             if (::tvInsulin.isInitialized) {
                 tvInsulin.text = String.format(Locale.getDefault(), "Insulin Remaining: %d U", units)
+                refreshStatusDisplay()
             }
         }
     }
@@ -350,6 +377,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
                 lastGlucose = glucose
                 lastGlucoseTimestamp = System.currentTimeMillis()
                 nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)
+                refreshStatusDisplay()
             }
         }
     }
@@ -431,6 +459,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     }
 
     override fun onDestroy() {
+        statusRefreshHandler.removeCallbacks(statusRefreshRunnable)
         if (isBound) {
             pumpService?.callback = null
             unbindService(connection)
