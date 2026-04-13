@@ -369,20 +369,22 @@ class GarDPump(context: Context) : TandemPump(context) {
     }
 
     fun sendBolus(totalUnits: Double, extMin: Int, unitsNow: Double) {
+        val effectiveExtMin = if (extMin <= 0) 2 else extMin
+        val effectiveUnitsNow = if (extMin <= 0 && unitsNow <= 0) totalUnits else unitsNow
+        
         enableActionsAffectingInsulinDelivery()
         synchronized(activeSessions) {
-            if (totalUnits > 10.0 || (activeSessions.size >= 3 && extMin > 0)) {
+            if (totalUnits > 10.0 || activeSessions.size >= 3) {
                 callback?.appendLog("Bolus rejected: invalid units or too many active sessions")
                 return
             }
-            if (extMin > 0) {
-                val session = ExtendedBolusSession(nextSessionId++, totalUnits, extMin, unitsNow, 0.0, extMin)
-                activeSessions.add(session)
-                if (activeSessions.size == 1) this.lastPulseTickTime = 0
-            }
+            val session = ExtendedBolusSession(nextSessionId++, totalUnits, effectiveExtMin, effectiveUnitsNow, 0.0, effectiveExtMin)
+            activeSessions.add(session)
+            if (activeSessions.size == 1) this.lastPulseTickTime = 0
         }
-        if (unitsNow > 0) {
-            this.pendingVolumeNow = (unitsNow * 1000).toLong()
+        
+        if (effectiveUnitsNow > 0) {
+            this.pendingVolumeNow = (effectiveUnitsNow * 1000).toLong()
             this.pendingIsMicroPulse = false
             this.pendingBolusWaiting = true
             val peripheral = this.connectedPeripheral ?: if (isSimulatorMode) getDummyPeripheral() else null

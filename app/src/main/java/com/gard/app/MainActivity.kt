@@ -126,16 +126,29 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
             val diffMs = System.currentTimeMillis() - lastUpdate
             val mins = (diffMs / 60000).toInt()
             val timeStr = if (mins <= 0) "just now" else if (mins == 1) "1 minute ago" else "$mins minutes ago"
-            tvStatus.text = "Status: $timeStr"
-            viewConnDot.setBackgroundColor(Color.GREEN)
-            layoutConnect.visibility = View.GONE
-            layoutMain.visibility = View.VISIBLE
+            
+            val newStatus = "Status: $timeStr"
+            if (tvStatus.text != newStatus) {
+                tvStatus.text = newStatus
+            }
+            
+            if (viewConnDot.background !is android.graphics.drawable.ColorDrawable || 
+                (viewConnDot.background as android.graphics.drawable.ColorDrawable).color != Color.GREEN) {
+                viewConnDot.setBackgroundColor(Color.GREEN)
+            }
+            
+            if (layoutConnect.visibility != View.GONE) layoutConnect.visibility = View.GONE
+            if (layoutMain.visibility != View.VISIBLE) layoutMain.visibility = View.VISIBLE
         } else {
-            tvStatus.text = "Status: $status"
-            if (status.startsWith("Disconnected")) {
-                viewConnDot.setBackgroundColor(Color.RED)
-            } else if (status == "Scanning...") {
-                viewConnDot.setBackgroundColor(Color.YELLOW)
+            val newStatus = "Status: $status"
+            if (tvStatus.text != newStatus) {
+                tvStatus.text = newStatus
+            }
+            
+            val targetColor = if (status.startsWith("Disconnected")) Color.RED else if (status == "Scanning...") Color.YELLOW else Color.TRANSPARENT
+            if (viewConnDot.background !is android.graphics.drawable.ColorDrawable || 
+                (viewConnDot.background as android.graphics.drawable.ColorDrawable).color != targetColor) {
+                viewConnDot.setBackgroundColor(targetColor)
             }
         }
     }
@@ -346,7 +359,8 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     override fun updateBattery(percent: Int) {
         runOnUiThread { 
             if (::tvBattery.isInitialized) {
-                tvBattery.text = String.format(Locale.getDefault(), "Battery: %d%%", percent)
+                val newText = String.format(Locale.getDefault(), "Battery: %d%%", percent)
+                if (tvBattery.text != newText) tvBattery.text = newText
                 refreshStatusDisplay()
             }
         }
@@ -355,7 +369,8 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     override fun updateIOB(iob: Double) {
         runOnUiThread { 
             if (::tvIOB.isInitialized) {
-                tvIOB.text = String.format(Locale.getDefault(), "IOB: %.2f U", iob)
+                val newText = String.format(Locale.getDefault(), "IOB: %.2f U", iob)
+                if (tvIOB.text != newText) tvIOB.text = newText
                 refreshStatusDisplay()
             }
         }
@@ -364,7 +379,8 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     override fun updateInsulin(units: Int) {
         runOnUiThread { 
             if (::tvInsulin.isInitialized) {
-                tvInsulin.text = String.format(Locale.getDefault(), "Insulin Remaining: %d U", units)
+                val newText = String.format(Locale.getDefault(), "Insulin Remaining: %d U", units)
+                if (tvInsulin.text != newText) tvInsulin.text = newText
                 refreshStatusDisplay()
             }
         }
@@ -373,7 +389,8 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     override fun updateCGM(glucose: Int, trend: String) {
         runOnUiThread {
             if (::tvCGM.isInitialized && glucose > 0) {
-                tvCGM.text = String.format(Locale.getDefault(), "CGM: %d mg/dL", glucose)
+                val newText = String.format(Locale.getDefault(), "CGM: %d mg/dL", glucose)
+                if (tvCGM.text != newText) tvCGM.text = newText
                 lastGlucose = glucose
                 lastGlucoseTimestamp = System.currentTimeMillis()
                 nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)
