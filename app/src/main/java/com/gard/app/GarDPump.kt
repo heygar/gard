@@ -198,7 +198,11 @@ class GarDPump(context: Context) : TandemPump(context) {
                     -3 -> "DoubleDown"
                     else -> "NONE"
                 }
-                callback?.updateCGM(message.cgmReading, trend)
+                if (message.cgmReading in 40..400) {
+                    callback?.updateCGM(message.cgmReading, trend)
+                } else {
+                    callback?.appendLog("Pump CGM reading ${message.cgmReading} is outside 40-400 range, ignoring.")
+                }
             }
             is HistoryLogStatusResponse -> {
                 val startSeq = if (lastHistorySequenceNum == -1L) {
@@ -353,7 +357,7 @@ class GarDPump(context: Context) : TandemPump(context) {
         val sessionStrings = synchronized(activeSessions) {
             activeSessions.map {
                 val elapsed = max(0, it.totalMinutes - it.remainingMinutes)
-                String.format(Locale.getDefault(), "Bolus %d: %.1f / %.1f U   in   %d / %d min", it.id, it.deliveredUnits, it.totalUnits, elapsed, it.totalMinutes)
+                String.format(Locale.getDefault(), "Bolus #%d: %.1f / %.1f U (%d/%d min)", it.id, it.deliveredUnits, it.totalUnits, elapsed, it.totalMinutes)
             }
         }
         
@@ -380,6 +384,7 @@ class GarDPump(context: Context) : TandemPump(context) {
             }
             val session = ExtendedBolusSession(nextSessionId++, totalUnits, effectiveExtMin, effectiveUnitsNow, 0.0, effectiveExtMin)
             activeSessions.add(session)
+            if (nextSessionId > 10) nextSessionId = 1
             if (activeSessions.size == 1) this.lastPulseTickTime = 0
         }
         
@@ -404,7 +409,14 @@ class GarDPump(context: Context) : TandemPump(context) {
         }
         bolusIdToContributions.clear()
         bolusIdToSessionId.clear()
+        this.lastPulseTickTime = 0
+        callback?.appendLog("Bolus Canceled by user.")
         callback?.cancelExtendedNotification()
-        callback?.markBolusReady()
+        callback?.updateSessionSummaryMulti(listOf("CANCELED"))
+        
+        // Hide the progress layout after a short delay
+        Handler(Looper.getMainLooper()).postDelayed({
+            callback?.updateSessionSummaryMulti(emptyList())
+        }, 3000)
     }
 }

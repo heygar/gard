@@ -15,8 +15,9 @@ class NightscoutClient(
     baseUrl: String, 
     private var apiSecret: String,
     private val logCallback: ((String) -> Unit)? = null
-) {
-    private var baseUrl: String = baseUrl.trimEnd('/')
+) { private var baseUrl: String = baseUrl.trimEnd('/')
+    private var lastUploadedSgv: Int = -1
+    private var lastUploadedDirection: String = ""
 
     private fun log(msg: String, error: Boolean = false) {
         if (error) Log.e("NightscoutClient", msg) else Log.i("NightscoutClient", msg)
@@ -60,6 +61,21 @@ class NightscoutClient(
     fun uploadGlucoseMulti(entries: List<GlucoseEntry>) {
         if (entries.isEmpty() || baseUrl.isBlank()) return
         
+        val toUpload = entries.filter {
+            if (it.glucose == lastUploadedSgv && it.direction == lastUploadedDirection) {
+                false
+            } else {
+                lastUploadedSgv = it.glucose
+                lastUploadedDirection = it.direction
+                true
+            }
+        }
+        
+        if (toUpload.isEmpty()) {
+            log("Skipping upload: values unchanged since last sync")
+            return
+        }
+        
         val hashed = getHashedSecret()
         
         thread(start = true, name = "NightscoutUpload") {
@@ -82,21 +98,21 @@ class NightscoutClient(
                 conn.doOutput = true
 
                 val jsonArray = JSONArray()
-                entries.forEach { entry ->
+                toUpload.forEach { entry ->
                     val obj = JSONObject().apply {
                         put("sgv", entry.glucose)
                         put("date", entry.timestamp)
                         put("mills", entry.timestamp)
                         put("dateString", ISO8601Utils.format(Date(entry.timestamp)))
                         put("type", "sgv")
-                        put("direction", entry.direction)
+                        //put("direction", entry.direction)
                         put("device", "GarD")
                     }
                     jsonArray.put(obj)
                 }
                 
                 val jsonPayload = jsonArray.toString()
-                log("POST ${entries.size} entries to $fullUrl")
+                log("POST ${toUpload.size} entries to $fullUrl")
                 
                 OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(jsonPayload) }
                 
@@ -104,7 +120,7 @@ class NightscoutClient(
                 val responseBody = readStream(conn)
                 
                 if (responseCode in 200..299) {
-                    log("SUCCESS ($responseCode): Uploaded ${entries.size} entries")
+                    log("SUCCESS ($responseCode): Uploaded ${toUpload.size} entries")
                 } else {
                     log("FAILED ($responseCode): $responseBody", true)
                 }

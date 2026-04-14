@@ -134,8 +134,17 @@ class PumpService : Service(), PumpUpdateListener {
                     // The Disconnected status handler already manages reconnects.
                     // We just log here for watchdog purposes.
                     appendLog("Watchdog: Pump currently disconnected.")
+                    if (lastStatus == "Connected & Initialized!") {
+                        updateStatus("Disconnected")
+                    }
                 } else {
-                    myPump.requestRealtimeStatus()
+                    val diff = System.currentTimeMillis() - lastUpdateMillis
+                    if (diff > 5 * 60 * 1000) { // 5 minutes without data
+                        appendLog("Watchdog: No data for 5m. Forcing refresh...")
+                        myPump.requestRealtimeStatus()
+                    } else {
+                        myPump.requestRealtimeStatus()
+                    }
                 }
                 pollingHandler.postDelayed(this, 2 * 60 * 1000)
             }
@@ -162,7 +171,10 @@ class PumpService : Service(), PumpUpdateListener {
 
     private fun createNotification(): Notification {
         val title = if (lastStatus == "Connected & Initialized!") {
-            "Pump Connected"
+            val mins = (System.currentTimeMillis() - lastUpdateMillis) / 60000
+            if (lastUpdateMillis == 0L) "Pump Connected" 
+            else if (mins <= 0) "Pump Connected (just now)"
+            else "Pump Connected ($mins min ago)"
         } else {
             lastStatus
         }

@@ -393,14 +393,25 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
                 if (tvCGM.text != newText) tvCGM.text = newText
                 lastGlucose = glucose
                 lastGlucoseTimestamp = System.currentTimeMillis()
-                nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)
+                
+                if (glucose in 40..400) {
+                    nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)
+                } else {
+                    appendLog("CGM value $glucose out of safety range (40-400), skipping cloud upload.")
+                }
                 refreshStatusDisplay()
             }
         }
     }
 
     override fun uploadGlucoseMulti(entries: List<NightscoutClient.GlucoseEntry>) {
-        nsClient.uploadGlucoseMulti(entries)
+        val filtered = entries.filter { it.glucose in 40..400 }
+        if (filtered.isNotEmpty()) {
+            nsClient.uploadGlucoseMulti(filtered)
+        }
+        if (filtered.size < entries.size) {
+            appendLog("Filtered out ${entries.size - filtered.size} CGM entries due to safety range (40-400).")
+        }
     }
 
     override fun setPendingContributions(contribs: Map<Int, Double>) {
