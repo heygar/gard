@@ -22,6 +22,7 @@ import com.jwoglom.pumpx2.pump.messages.response.control.InitiateBolusResponse
 import com.jwoglom.pumpx2.pump.messages.response.currentStatus.*
 import com.jwoglom.pumpx2.pump.messages.response.historyLog.DexcomG6CGMHistoryLog
 import com.jwoglom.pumpx2.pump.messages.response.historyLog.DexcomG7CGMHistoryLog
+import com.jwoglom.pumpx2.pump.messages.response.historyLog.CgmDataFsl3HistoryLog
 import com.jwoglom.pumpx2.pump.messages.response.historyLog.HistoryLogStreamResponse
 import com.jwoglom.pumpx2.pump.messages.helpers.Dates
 import java.util.Locale
@@ -236,9 +237,11 @@ class GarDPump(context: Context) : TandemPump(context) {
                         entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, ""))
                     } else if (log is DexcomG7CGMHistoryLog) {
                         entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, ""))
-                    } else if (log.typeId() == 219 || log.typeId() == 264) {
-                        // Libre 3+ likely uses these IDs. We log them for investigation.
-                        callback?.appendLog("Detected Libre3+ History Log (${log.typeId()}): ${log.cargo.joinToString(",")}")
+                    } else if (log is CgmDataFsl3HistoryLog) {
+                        entries.add(NightscoutClient.GlucoseEntry(log.glucoseValue, timestamp, ""))
+                    } else if (log.typeId() == 219 || log.typeId() == 264 || log.typeId() == 481) {
+                        // Libre 3+ likely uses these IDs. 480 is confirmed.
+                        // 481 and 219/264 are likely trend or status logs.
                     }
                 }
                 if (entries.isNotEmpty()) {

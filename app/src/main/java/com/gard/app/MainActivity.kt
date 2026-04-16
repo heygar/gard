@@ -444,8 +444,9 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
             if (::tvCGM.isInitialized && glucose > 0) {
                 val newText = String.format(Locale.getDefault(), "CGM: %d mg/dL", glucose)
                 if (tvCGM.text != newText) tvCGM.text = newText
+                
                 lastGlucose = glucose
-                lastGlucoseTimestamp = if (timestamp > 0) timestamp else System.currentTimeMillis()
+                lastGlucoseTimestamp = System.currentTimeMillis()
                 
                 if (glucose in 40..400) {
                     nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)

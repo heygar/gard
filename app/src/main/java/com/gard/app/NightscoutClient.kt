@@ -58,26 +58,29 @@ class NightscoutClient(
 
     data class GlucoseEntry(val glucose: Int, val timestamp: Long, val direction: String)
 
-    private val uploadedTimestamps = mutableSetOf<Long>()
+    private val uploadedTimestamps = java.util.LinkedHashSet<String>()
 
     fun uploadGlucoseMulti(entries: List<GlucoseEntry>) {
         if (entries.isEmpty() || baseUrl.isBlank()) return
         
         val toUpload = entries.filter {
-            if (uploadedTimestamps.contains(it.timestamp)) {
+            val key = "${it.timestamp}_${it.glucose}"
+            if (uploadedTimestamps.contains(key)) {
                 false
             } else {
-                uploadedTimestamps.add(it.timestamp)
-                // Keep the set size manageable (last 100 readings)
-                if (uploadedTimestamps.size > 100) {
-                    uploadedTimestamps.remove(uploadedTimestamps.first())
+                uploadedTimestamps.add(key)
+                if (uploadedTimestamps.size > 200) {
+                    val it2 = uploadedTimestamps.iterator()
+                    if (it2.hasNext()) {
+                        it2.next()
+                        it2.remove()
+                    }
                 }
                 true
             }
         }
         
         if (toUpload.isEmpty()) {
-            log("Skipping upload: values unchanged since last sync")
             return
         }
         
@@ -96,7 +99,6 @@ class NightscoutClient(
                 conn.setRequestProperty("User-Agent", "GarD-Android")
                 
                 if (apiSecret.isNotEmpty()) {
-                    // Send ONLY the hashed secret. Do not send the plain text API-SECRET.
                     conn.setRequestProperty("api-secret", hashed)
                 }
 
@@ -107,26 +109,21 @@ class NightscoutClient(
                     val obj = JSONObject().apply {
                         put("sgv", entry.glucose)
                         put("date", entry.timestamp)
-                        put("mills", entry.timestamp)
-                        put("dateString", ISO8601Utils.format(Date(entry.timestamp)))
                         put("type", "sgv")
-                        put("direction", entry.direction)
+                        put("direction", entry.direction.ifBlank { "NONE" })
                         put("device", "GarD")
                     }
                     jsonArray.put(obj)
                 }
                 
                 val jsonPayload = jsonArray.toString()
-                log("POST ${toUpload.size} entries to $fullUrl")
+                log("POST ${toUpload.size} entries to Nightscout")
                 
                 OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(jsonPayload) }
                 
                 val responseCode = conn.responseCode
-                val responseBody = readStream(conn)
-                
-                if (responseCode in 200..299) {
-                    log("SUCCESS ($responseCode): Uploaded ${toUpload.size} entries")
-                } else {
+                if (responseCode !in 200..299) {
+                    val responseBody = readStream(conn)
                     log("FAILED ($responseCode): $responseBody", true)
                 }
                 conn.disconnect()
