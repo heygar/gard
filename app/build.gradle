@@ -2,6 +2,14 @@ plugins {
     id 'com.android.application'
 }
 
+def generateVersionCode() {
+    return (int)(System.currentTimeMillis() / 60000)
+}
+
+def generateVersionName() {
+    return "1.0-" + new java.text.SimpleDateFormat("yyyyMMdd.HHmm").format(new java.util.Date())
+}
+
 android {
     namespace 'com.gard.app'
     compileSdk 34
@@ -10,8 +18,8 @@ android {
         applicationId "com.gard.app"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode generateVersionCode()
+        versionName generateVersionName()
     }
     
     buildFeatures {

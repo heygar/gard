@@ -58,15 +58,20 @@ class NightscoutClient(
 
     data class GlucoseEntry(val glucose: Int, val timestamp: Long, val direction: String)
 
+    private val uploadedTimestamps = mutableSetOf<Long>()
+
     fun uploadGlucoseMulti(entries: List<GlucoseEntry>) {
         if (entries.isEmpty() || baseUrl.isBlank()) return
         
         val toUpload = entries.filter {
-            if (it.glucose == lastUploadedSgv && it.direction == lastUploadedDirection) {
+            if (uploadedTimestamps.contains(it.timestamp)) {
                 false
             } else {
-                lastUploadedSgv = it.glucose
-                lastUploadedDirection = it.direction
+                uploadedTimestamps.add(it.timestamp)
+                // Keep the set size manageable (last 100 readings)
+                if (uploadedTimestamps.size > 100) {
+                    uploadedTimestamps.remove(uploadedTimestamps.first())
+                }
                 true
             }
         }
@@ -105,7 +110,7 @@ class NightscoutClient(
                         put("mills", entry.timestamp)
                         put("dateString", ISO8601Utils.format(Date(entry.timestamp)))
                         put("type", "sgv")
-                        //put("direction", entry.direction)
+                        put("direction", entry.direction)
                         put("device", "GarD")
                     }
                     jsonArray.put(obj)

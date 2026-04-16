@@ -287,6 +287,15 @@
         android:layout_height="wrap_content"
         android:text="COPY LOGS"
         android:layout_marginTop="12dp"
+        android:layout_marginBottom="4dp"/>
+
+    <TextView
+        android:id="@+id/tvVersion"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="v1.0"
+        android:textColor="#555577"
+        android:textSize="12sp"
         android:layout_marginBottom="8dp"/>
 
     <ScrollView

@@ -1,42 +1,41 @@
 package com.gard.app
 
 import android.Manifest
-import android.content.ComponentName
-import android.content.ServiceConnection
-import android.content.pm.PackageManager
-import android.os.Build
-import android.os.Bundle
-import android.widget.Button
-import android.widget.EditText
-import android.widget.TextView
-import android.widget.CheckBox
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import timber.log.Timber
-import android.view.View
-import android.os.Handler
-import android.os.Looper
-import android.widget.Toast
-import android.content.ClipboardManager
-import android.content.ClipData
-import android.content.Context
+import android.app.AlarmManager
 import android.app.AlertDialog
-import android.graphics.Color
-import android.view.Gravity
-import android.widget.LinearLayout
-import android.text.Editable
-import android.text.TextWatcher
-import androidx.biometric.BiometricPrompt
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.ServiceConnection
+import android.content.BroadcastReceiver
+import android.content.pm.PackageManager
+import android.graphics.Color
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
-import java.util.Locale
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.biometric.BiometricPrompt
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import timber.log.Timber
+import java.util.Locale
 
 class MainActivity : AppCompatActivity(), PumpUpdateListener {
 
@@ -113,7 +112,7 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
     private val statusRefreshRunnable = object : Runnable {
         override fun run() {
             refreshStatusDisplay()
-            statusRefreshHandler.postDelayed(this, 30000) // Refresh every 30s
+            statusRefreshHandler.postDelayed(this, 10000) // Refresh every 10s for better "seconds ago" feel
         }
     }
 
@@ -124,8 +123,15 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         
         if (status == "Connected & Initialized!" && lastUpdate > 0) {
             val diffMs = System.currentTimeMillis() - lastUpdate
-            val mins = (diffMs / 60000).toInt()
-            val timeStr = if (mins <= 0) "just now" else if (mins == 1) "1 minute ago" else "$mins minutes ago"
+            val diffSec = (diffMs / 1000).toInt()
+
+            val timeStr = "$diffSec seconds"
+            //val timeStr = when {
+                ////diffSec < 10 -> "just now"
+                //diffSec < 60 -> "$diffSec seconds ago"
+                //diffSec < 120 -> "1 minute ago"
+                //else -> "${diffSec / 60} minutes ago"
+            //}
             
             val newStatus = "Status: $timeStr"
             if (tvStatus.text != newStatus) {
@@ -178,6 +184,8 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         cbUploadToCloud = findViewById(R.id.cbUploadToCloud)
         cbUploadToCloud.visibility = View.GONE
         tvCGM = findViewById(R.id.tvCGM)
+        val tvVersion: TextView = findViewById(R.id.tvVersion)
+        tvVersion.text = String.format(Locale.getDefault(), "v%s (%d)", BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
 
         // Bind the foreground service (start it if not running)
         val intent = Intent(this, PumpService::class.java)
@@ -247,11 +255,14 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
 
         btnConnect.setOnClickListener {
             val code = etPairingCode.text.toString().trim()
-            if (code.isNotEmpty()) {
-                // Only clear the secret if a NEW code is provided
-                com.jwoglom.pumpx2.pump.PumpState.setJpakeDerivedSecret(this, "")
+            checkPermissionsAndStart()
+            if (hasPermissions()) {
+                if (code.isNotEmpty()) {
+                    // Only clear the secret if a NEW code is provided
+                    com.jwoglom.pumpx2.pump.PumpState.setJpakeDerivedSecret(this, "")
+                }
+                pumpService?.startBluetooth(code)
             }
-            pumpService?.startBluetooth(code)
         }
 
         tvStatus.setOnTouchListener { v, event ->
@@ -314,6 +325,9 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            permissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        }
         return permissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
     }
 
@@ -326,12 +340,51 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
+        
         val missing = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
         } else {
+            // 1. Check background location
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                
+                showPermissionDialog(
+                    "Background Location Required",
+                    "To keep the pump connected while the screen is off, please select 'Allow all the time' in the next screen.",
+                    Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                    2
+                )
+                return
+            }
+
+            // 2. Check Exact Alarm permission for Android 12+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val alarmManager = getSystemService(AlarmManager::class.java)
+                if (alarmManager != null && !alarmManager.canScheduleExactAlarms()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Exact Alarms Required")
+                        .setMessage("To ensure the pump polls on time, this app needs the 'Alarms & reminders' permission. Please enable it in the next screen.")
+                        .setPositiveButton("OK") { _, _ ->
+                            startActivity(Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
+                        }
+                        .show()
+                    return
+                }
+            }
+
             pumpService?.startBluetooth("")
         }
+    }
+
+    private fun showPermissionDialog(title: String, message: String, permission: String, requestCode: Int) {
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("OK") { _, _ ->
+                ActivityCompat.requestPermissions(this, arrayOf(permission), requestCode)
+            }
+            .show()
     }
 
     private val logBuffer = java.util.LinkedList<String>()
@@ -386,13 +439,13 @@ class MainActivity : AppCompatActivity(), PumpUpdateListener {
         }
     }
 
-    override fun updateCGM(glucose: Int, trend: String) {
+    override fun updateCGM(glucose: Int, trend: String, timestamp: Long) {
         runOnUiThread {
             if (::tvCGM.isInitialized && glucose > 0) {
                 val newText = String.format(Locale.getDefault(), "CGM: %d mg/dL", glucose)
                 if (tvCGM.text != newText) tvCGM.text = newText
                 lastGlucose = glucose
-                lastGlucoseTimestamp = System.currentTimeMillis()
+                lastGlucoseTimestamp = if (timestamp > 0) timestamp else System.currentTimeMillis()
                 
                 if (glucose in 40..400) {
                     nsClient.uploadGlucose(glucose, lastGlucoseTimestamp, trend)

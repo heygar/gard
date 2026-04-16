@@ -45,7 +45,7 @@ interface PumpUpdateListener {
     fun updateBattery(percent: Int)
     fun updateIOB(iob: Double)
     fun updateInsulin(units: Int)
-    fun updateCGM(glucose: Int, trend: String)
+    fun updateCGM(glucose: Int, trend: String, timestamp: Long = 0L)
     fun updateSessionSummaryMulti(lines: List<String>)
     fun updateExtendedNotification(total: Double, delivered: Double, remainingMins: Int)
     fun cancelExtendedNotification()
@@ -154,7 +154,13 @@ class GarDPump(context: Context) : TandemPump(context) {
     }
 
     override fun onReceiveQualifyingEvent(peripheral: BluetoothPeripheral, events: MutableSet<com.jwoglom.pumpx2.pump.messages.response.qualifyingEvent.QualifyingEvent>) {
-        requestRealtimeStatus()
+        // Only request history on peeps, not a full status sweep
+        sendCommand(peripheral, HistoryLogStatusRequest())
+        
+        // If we have an active extended bolus, we might want to check progress too
+        if (activeSessions.isNotEmpty()) {
+            sendCommand(peripheral, CurrentBolusStatusRequest())
+        }
     }
 
     override fun onWaitingForPairingCode(peripheral: BluetoothPeripheral, centralChallenge: com.jwoglom.pumpx2.pump.messages.response.authentication.AbstractCentralChallengeResponse?) {
@@ -199,7 +205,8 @@ class GarDPump(context: Context) : TandemPump(context) {
                     else -> "NONE"
                 }
                 if (message.cgmReading in 40..400) {
-                    callback?.updateCGM(message.cgmReading, trend)
+                    val pumpTimestamp = Dates.fromJan12008ToUnixEpochSeconds(message.getBgReadingTimestampSeconds()) * 1000
+                    callback?.updateCGM(message.cgmReading, trend, pumpTimestamp)
                 } else {
                     callback?.appendLog("Pump CGM reading ${message.cgmReading} is outside 40-400 range, ignoring.")
                 }
@@ -223,12 +230,15 @@ class GarDPump(context: Context) : TandemPump(context) {
                 message.historyLogs.forEach { log ->
                     lastHistorySequenceNum = max(lastHistorySequenceNum, log.sequenceNum)
                     
+                    val timestamp = Dates.fromJan12008ToUnixEpochSeconds(log.pumpTimeSec) * 1000
+                    
                     if (log is DexcomG6CGMHistoryLog) {
-                        val timestamp = Dates.fromJan12008ToUnixEpochSeconds(log.timeStampSeconds) * 1000
-                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, "Flat"))
+                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, ""))
                     } else if (log is DexcomG7CGMHistoryLog) {
-                        val timestamp = Dates.fromJan12008ToUnixEpochSeconds(log.egvTimestamp) * 1000
-                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, "Flat"))
+                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, ""))
+                    } else if (log.typeId() == 219 || log.typeId() == 264) {
+                        // Libre 3+ likely uses these IDs. We log them for investigation.
+                        callback?.appendLog("Detected Libre3+ History Log (${log.typeId()}): ${log.cargo.joinToString(",")}")
                     }
                 }
                 if (entries.isNotEmpty()) {
@@ -287,7 +297,16 @@ class GarDPump(context: Context) : TandemPump(context) {
         }
     }
     
-    fun requestRealtimeStatus() {
+    private var lastFullPollTime = 0L
+
+    fun requestRealtimeStatus(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && (now - lastFullPollTime < 60000)) {
+            // Skip redundant poll to save battery
+            return
+        }
+        lastFullPollTime = now
+
         val peripheral = this.connectedPeripheral ?: if (isSimulatorMode) getDummyPeripheral() else return
         val apiVer = PumpStateSupplier.pumpApiVersion?.get()
         if (apiVer != null) {

@@ -14,6 +14,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
+import android.app.AlarmManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.jwoglom.pumpx2.pump.bluetooth.TandemBluetoothHandler
@@ -28,16 +30,22 @@ class PumpService : Service(), PumpUpdateListener {
     private var bluetoothHandler: TandemBluetoothHandler? = null
     private val pollingHandler = Handler(Looper.getMainLooper())
     private var pollingRunnable: Runnable? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private lateinit var alarmManager: AlarmManager
 
     // State for notification
     var lastStatus: String = "Disconnected"
         private set
     var lastUpdateMillis: Long = 0L
         private set
-    private var currentGlucose: Int = 0
-    private var currentIOB: Double = 0.0
-    private var currentInsulin: Int = 0
-    private var currentBattery: Int = 0
+    var currentGlucose: Int = 0
+        private set
+    var currentIOB: Double = 0.0
+        private set
+    var currentInsulin: Int = 0
+        private set
+    var currentBattery: Int = 0
+        private set
     private var isExtendedActive: Boolean = false
     private var extDelivered: Double = 0.0
     private var extTotal: Double = 0.0
@@ -57,6 +65,12 @@ class PumpService : Service(), PumpUpdateListener {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GarD:PumpServiceWakeLock")
+        wakeLock?.acquire()
+        alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+
         myPump = GarDPump(applicationContext)
         myPump.callback = this
         // Start foreground service immediately
@@ -78,6 +92,9 @@ class PumpService : Service(), PumpUpdateListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "POLL_ACTION") {
+            doPoll()
+        }
         // Keep service running
         return START_STICKY
     }
@@ -128,28 +145,42 @@ class PumpService : Service(), PumpUpdateListener {
     fun startStatusPolling() {
         if (pollingRunnable != null) return
         appendLog("Starting status polling (2m intervals)")
-        pollingRunnable = object : Runnable {
-            override fun run() {
-                if (myPump.connectedPeripheral == null) {
-                    // The Disconnected status handler already manages reconnects.
-                    // We just log here for watchdog purposes.
-                    appendLog("Watchdog: Pump currently disconnected.")
-                    if (lastStatus == "Connected & Initialized!") {
-                        updateStatus("Disconnected")
-                    }
-                } else {
-                    val diff = System.currentTimeMillis() - lastUpdateMillis
-                    if (diff > 5 * 60 * 1000) { // 5 minutes without data
-                        appendLog("Watchdog: No data for 5m. Forcing refresh...")
-                        myPump.requestRealtimeStatus()
-                    } else {
-                        myPump.requestRealtimeStatus()
-                    }
-                }
-                pollingHandler.postDelayed(this, 2 * 60 * 1000)
-            }
+        scheduleNextPoll()
+        // No longer using Handler loop to avoid fighting with AlarmManager
+        pollingRunnable = object : Runnable { override fun run() {} }
+    }
+
+    private fun doPoll() {
+        if (myPump.connectedPeripheral == null) {
+            appendLog("Watchdog: Pump currently disconnected. Attempting reconnect...")
+            startBluetooth("")
+        } else {
+            appendLog("Watchdog: Requesting status update...")
+            myPump.requestRealtimeStatus(force = true)
         }
-        pollingHandler.post(pollingRunnable!!)
+        scheduleNextPoll()
+    }
+
+    private fun scheduleNextPoll() {
+        val intent = Intent(this, AlarmReceiver::class.java)
+        intent.action = "POLL_ACTION"
+        val pendingIntent = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val triggerAtMillis = System.currentTimeMillis() + 2 * 60 * 1000
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+            if (alarmManager.canScheduleExactAlarms()) {
+                // Use setAlarmClock for maximum priority on Samsung devices
+                val info = AlarmManager.AlarmClockInfo(triggerAtMillis, pendingIntent)
+                alarmManager.setAlarmClock(info, pendingIntent)
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+        } else {
+            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+        }
     }
 
     fun stopStatusPolling() {
@@ -171,10 +202,7 @@ class PumpService : Service(), PumpUpdateListener {
 
     private fun createNotification(): Notification {
         val title = if (lastStatus == "Connected & Initialized!") {
-            val mins = (System.currentTimeMillis() - lastUpdateMillis) / 60000
-            if (lastUpdateMillis == 0L) "Pump Connected" 
-            else if (mins <= 0) "Pump Connected (just now)"
-            else "Pump Connected ($mins min ago)"
+            "Pump Connected"
         } else {
             lastStatus
         }
@@ -201,6 +229,8 @@ class PumpService : Service(), PumpUpdateListener {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setSilent(true)
+            .setShowWhen(true)
+            .setWhen(if (lastUpdateMillis > 0) lastUpdateMillis else System.currentTimeMillis())
 
         if (isExtendedActive) {
             val cancelIntent = Intent(MainActivity.ACTION_CANCEL_EXTENDED)
@@ -211,7 +241,15 @@ class PumpService : Service(), PumpUpdateListener {
         return builder.build()
     }
 
+    private val notificationHandler = Handler(Looper.getMainLooper())
+    private val notificationRunnable = Runnable { updateNotificationImmediate() }
+
     private fun updateNotification() {
+        notificationHandler.removeCallbacks(notificationRunnable)
+        notificationHandler.postDelayed(notificationRunnable, 500) // Wait 500ms for all pump data to arrive
+    }
+
+    private fun updateNotificationImmediate() {
         if (isForeground) {
             val notification = createNotification()
             val manager = getSystemService(NotificationManager::class.java)
@@ -229,7 +267,6 @@ class PumpService : Service(), PumpUpdateListener {
     override fun updateStatus(status: String) {
         lastStatus = status
         if (status == "Connected & Initialized!") {
-            lastUpdateMillis = System.currentTimeMillis()
             reconnectCount = 0
             startStatusPolling()
         } else if (status == "Disconnected") {
@@ -237,6 +274,8 @@ class PumpService : Service(), PumpUpdateListener {
             reconnectCount++
             val delay = (5000L * reconnectCount).coerceAtMost(60000L)
             appendLog("Auto-reconnect attempt $reconnectCount in ${delay/1000}s...")
+            
+            // Still using Handler for immediate local reconnect, but AlarmManager will also trigger it
             pollingHandler.postDelayed({
                 if (lastStatus == "Disconnected") {
                     startBluetooth("")
@@ -249,6 +288,9 @@ class PumpService : Service(), PumpUpdateListener {
 
     override fun onDestroy() {
         stopStatusPolling()
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
         callback = null
         super.onDestroy()
     }
@@ -274,11 +316,11 @@ class PumpService : Service(), PumpUpdateListener {
         callback?.updateInsulin(units)
     }
 
-    override fun updateCGM(glucose: Int, trend: String) {
+    override fun updateCGM(glucose: Int, trend: String, timestamp: Long) {
         lastUpdateMillis = System.currentTimeMillis()
         currentGlucose = glucose
         updateNotification()
-        callback?.updateCGM(glucose, trend)
+        callback?.updateCGM(glucose, trend, timestamp)
     }
 
     override fun updateSessionSummaryMulti(lines: List<String>) {
