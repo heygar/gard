@@ -68,7 +68,8 @@ class PumpService : Service(), PumpUpdateListener {
 
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GarD:PumpServiceWakeLock")
-        wakeLock?.acquire()
+        // Acquire wake lock and keep it active
+        wakeLock?.acquire(10*60*1000) // 10 minutes, will be refreshed
         alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
 
         myPump = GarDPump(applicationContext)
@@ -91,12 +92,39 @@ class PumpService : Service(), PumpUpdateListener {
         isForeground = true
     }
 
+    // Add a method to refresh wake lock periodically
+    private fun refreshWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+            }
+            it.acquire(10*60*1000) // 10 minutes
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "POLL_ACTION") {
             doPoll()
         }
         // Keep service running
         return START_STICKY
+    }
+
+    // Add a method to refresh the foreground service to prevent being killed
+    private fun refreshForegroundService() {
+        if (isForeground) {
+            // Update the notification to keep the service alive
+            val notification = createNotification()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -151,6 +179,12 @@ class PumpService : Service(), PumpUpdateListener {
     }
 
     private fun doPoll() {
+        // Ensure wake lock is held during polling
+        refreshWakeLock()
+        
+        // Refresh foreground service to prevent being killed
+        refreshForegroundService()
+        
         if (myPump.connectedPeripheral == null) {
             appendLog("Watchdog: Pump currently disconnected. Attempting reconnect...")
             startBluetooth("")
@@ -166,6 +200,13 @@ class PumpService : Service(), PumpUpdateListener {
         intent.action = "POLL_ACTION"
         val pendingIntent = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val triggerAtMillis = System.currentTimeMillis() + 2 * 60 * 1000
+        
+        // Ensure wake lock is held when scheduling alarm
+        wakeLock?.let {
+            if (!it.isHeld) {
+                it.acquire(10*60*1000)
+            }
+        }
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
@@ -259,6 +300,11 @@ class PumpService : Service(), PumpUpdateListener {
         }
     }
 
+    // Add a method to ensure notification is always updated
+    private fun ensureNotificationUpdated() {
+        updateNotificationImmediate()
+    }
+
     // PumpUpdateListener implementation
     override fun appendLog(msg: String) {
         callback?.appendLog(msg)
@@ -291,6 +337,11 @@ class PumpService : Service(), PumpUpdateListener {
         wakeLock?.let {
             if (it.isHeld) it.release()
         }
+        // Cancel any pending alarms
+        val intent = Intent(this, AlarmReceiver::class.java)
+        intent.action = "POLL_ACTION"
+        val pendingIntent = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        alarmManager.cancel(pendingIntent)
         callback = null
         super.onDestroy()
     }

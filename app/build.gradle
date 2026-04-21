@@ -10,6 +10,13 @@ def generateVersionName() {
     return "1.0-" + new java.text.SimpleDateFormat("yyyyMMdd.HHmm").format(new java.util.Date())
 }
 
+// Load signing configuration if it exists
+def signingConfigFile = file("../signing.properties")
+def signingConfig = [:]
+if (signingConfigFile.exists()) {
+    signingConfig.load(signingConfigFile.toPath())
+}
+
 android {
     namespace 'com.gard.app'
     compileSdk 34
@@ -30,6 +37,27 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
+    }
+
+    // Signing configuration for release builds
+    if (signingConfig.storeFile) {
+        signingConfigs {
+            release {
+                storeFile = file(signingConfig.storeFile)
+                storePassword = signingConfig.storePassword
+                keyAlias = signingConfig.keyAlias
+                keyPassword = signingConfig.keyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (signingConfig.storeFile) {
+                signingConfig signingConfigs.release
+            }
+        }
     }
 }
 

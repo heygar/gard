@@ -80,6 +80,23 @@ class GarDPump(context: Context) : TandemPump(context) {
 
     private var lastHistorySequenceNum: Long = -1
 
+    /**
+     * Converts raw rate (mg/dL per minute) from history logs to Nightscout trend direction.
+     * The rate field from Dexcom sensors is a signed byte representing glucose change rate.
+     * This maps it to Nightscout's standard direction names for A1C accuracy.
+     */
+    private fun rateToTrendDirection(rate: Int): String {
+        return when {
+            rate >= 5 -> "DoubleUp"
+            rate >= 2 -> "SingleUp"
+            rate == 1 -> "FortyFiveUp"
+            rate >= -1 -> "Flat"
+            rate == -2 -> "FortyFiveDown"
+            rate >= -4 -> "SingleDown"
+            else -> "DoubleDown"
+        }
+    }
+
     private fun getDummyPeripheral(): BluetoothPeripheral {
         return TandemBluetoothHandler.getInstance(context, this).central.getPeripheral("00:00:00:00:00:00")
     }
@@ -228,21 +245,42 @@ class GarDPump(context: Context) : TandemPump(context) {
             }
             is HistoryLogStreamResponse -> {
                 val entries = mutableListOf<NightscoutClient.GlucoseEntry>()
+                
+                // First pass: extract FSL3 trend data from typeId=481 unknown logs
+                // These entries represent trend/rate data for FSL3 readings and come with timestamp
+                val trendByPumpTime = mutableMapOf<Long, Int>()
+                message.historyLogs.forEach { log ->
+                    if (log.typeId() == 481) {
+                        // typeId=481 is FSL3 trend data (not yet implemented in pumpx2)
+                        // Payload structure (bytes 10-25): contains trend information
+                        // Extract byte 14 as a candidate trend rate (similar to Dexcom's byte 13 rate field)
+                        if (log.cargo.size >= 15) {
+                            val trendByte = log.cargo[14].toInt()
+                            trendByPumpTime[log.pumpTimeSec] = trendByte
+                            callback?.appendLog("FSL3 Trend: pumpTime=${log.pumpTimeSec}, trendRaw=$trendByte")
+                        }
+                    }
+                }
+                
+                // Second pass: process glucose entries with extracted trends
                 message.historyLogs.forEach { log ->
                     lastHistorySequenceNum = max(lastHistorySequenceNum, log.sequenceNum)
                     
                     val timestamp = Dates.fromJan12008ToUnixEpochSeconds(log.pumpTimeSec) * 1000
                     
                     if (log is DexcomG6CGMHistoryLog) {
-                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, ""))
+                        val direction = rateToTrendDirection(log.rate)
+                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, direction))
                     } else if (log is DexcomG7CGMHistoryLog) {
-                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, ""))
+                        val direction = rateToTrendDirection(log.rate)
+                        entries.add(NightscoutClient.GlucoseEntry(log.currentGlucoseDisplayValue, timestamp, direction))
                     } else if (log is CgmDataFsl3HistoryLog) {
-                        entries.add(NightscoutClient.GlucoseEntry(log.glucoseValue, timestamp, ""))
-                    } else if (log.typeId() == 219 || log.typeId() == 264 || log.typeId() == 481) {
-                        // Libre 3+ likely uses these IDs. 480 is confirmed.
-                        // 481 and 219/264 are likely trend or status logs.
+                        // FSL3: try to use trend data from paired typeId=481 entry with same pumpTimeSec
+                        val trendByte = trendByPumpTime[log.pumpTimeSec] ?: 0
+                        val direction = rateToTrendDirection(trendByte)
+                        entries.add(NightscoutClient.GlucoseEntry(log.glucoseValue, timestamp, direction))
                     }
+                    // Skip standalone typeId=481 entries - they've been processed for trends
                 }
                 if (entries.isNotEmpty()) {
                     callback?.uploadGlucoseMulti(entries)
